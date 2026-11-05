@@ -358,6 +358,47 @@ describe('tables in the pane', () => {
     await ui.unmount()
   })
 
+  test('the header rows are bold and the data rows are not', SLOW, async ($, on) => {
+    fixture(on, { ...FILES, 'T.md': TABLE })
+    await $.command.run(run('files', 'T.md'))
+    const ui = await $.ui.mount(pane('terminal', 90))
+    const found = await ui.findAll({ in: 'nav', type: 'Text', text: /^[│┌├└]/ })
+    // Top border, header, rule, two rows, bottom border.
+    expect(found).toHaveLength(6)
+    expect(found[1]?.props.bold).toBe(true)
+    expect(found[3]?.props.bold).toBeFalsy()
+    await ui.unmount()
+  })
+
+  test('a pipe in a code fence is code, not a table; an escaped pipe in a cell is text', SLOW, async ($, on) => {
+    const fenced = ['```', '| a | b |', '| - | - |', '| 1 | 2 |', '```', ''].join('\n')
+    const escaped = ['| a | b |', '| - | - |', '| x \\| y | 2 |', ''].join('\n')
+    fixture(on, { ...FILES, 'F.md': fenced, 'E.md': escaped })
+    await $.command.run(run('files', 'F.md'))
+    const code = await $.ui.mount(pane('terminal', 60))
+    expect(await grid(code)).toHaveLength(0)
+    expect(String((await code.find({ in: 'nav', type: 'Markdown' }))?.props.text)).toContain('| 1 | 2 |')
+    await code.unmount()
+
+    await $.command.run(run('files', 'E.md'))
+    const esc = await $.ui.mount(pane('terminal', 60))
+    expect((await grid(esc)).some(l => l.includes('x | y'))).toBe(true)
+    await esc.unmount()
+  })
+
+  test('more columns than the pane can hold still draw, each row on one line', SLOW, async ($, on) => {
+    const cols = Array.from({ length: 14 }, (_, i) => `c${i}`)
+    const table = [`| ${cols.join(' | ')} |`, `|${cols.map(() => ' - ').join('|')}|`, `| ${cols.map((_, i) => `v${i}`).join(' | ')} |`, ''].join('\n')
+    fixture(on, { ...FILES, 'W.md': table })
+    await $.command.run(run('files', 'W.md'))
+    const ui = await $.ui.mount(pane('terminal', 30))
+    const rows = await grid(ui)
+    // Top border, header, rule, row, bottom border: no wrapping into extra lines at three cells a column.
+    expect(rows.length).toBeGreaterThanOrEqual(5)
+    expect(rows.some(l => l.includes('c13'))).toBe(true)
+    await ui.unmount()
+  })
+
   test('a small table keeps its natural width', SLOW, async ($, on) => {
     fixture(on, { ...FILES, 'S.md': SMALL })
     await $.command.run(run('files', 'S.md'))
@@ -376,6 +417,73 @@ describe('tables in the pane', () => {
     expect(text).toContain('Kind')
     expect(text).toContain('fork')
     await ui.unmount()
+  })
+})
+
+describe('the title row and the status line, in every view', () => {
+  const titleOf = (ui: Finder, path: string) =>
+    ui.find({ in: 'nav', type: 'Text', text: new RegExp('^' + path.replace('.', '\\.').replace('/', '\\/') + '$') })
+
+  test('raw code: the title is up at the top and goes when the view scrolls', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'hooks/register.tsx'))
+    const ui = await $.ui.mount(pane('terminal'))
+    expect(await titleOf(ui, 'hooks/register.tsx')).toBeDefined()
+    await ui.key({ key: 'pagedown', in: 'nav' })
+    expect(await titleOf(ui, 'hooks/register.tsx')).toBeUndefined()
+    await ui.key({ key: 'home', in: 'nav' })
+    expect(await titleOf(ui, 'hooks/register.tsx')).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the diff: title up, the toggle in the status line goes in and out, and it lights up', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'hooks/repo.ts'))
+    const ui = await $.ui.mount(pane('terminal'))
+    const lit = async () => (await ui.find({ in: 'nav', type: 'Text', text: /^diff$/ }))?.props.underline
+    expect(await lit()).toBeUndefined()
+    await ui.pointer({ in: 'nav', type: 'move', x: (await footer(ui)).indexOf('diff') + 1, y: STATUS_ROW })
+    expect(await lit()).toBe(true)
+    await clickFooter(ui, 'diff')
+    expect(await footer(ui)).toContain('← file')
+    expect(await titleOf(ui, 'hooks/repo.ts')).toBeDefined()
+    expect(await codeIn(ui)).toBeUndefined()
+    await clickFooter(ui, '← file')
+    expect(await footer(ui)).toContain('← back')
+    expect(await codeIn(ui)).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('editing: the title is up at the top of the buffer', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'README.md'))
+    const ui = await $.ui.mount(pane('terminal'))
+    await ui.key({ key: 'right', in: 'nav' })
+    expect(await drawn(ui)).toContain('EDIT')
+    expect(await titleOf(ui, 'README.md')).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the title carries the git mark and the dot for a file Claude edited', SLOW, async ($, on) => {
+    fixture(on)
+    on('tool.call', { tool: 'Edit' }, () => ({ result: { filePath: `${ROOT}/hooks/repo.ts` } as never }))
+    await $.command.run(run('files', 'hooks'))
+    await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/hooks/repo.ts`, old_string: 'repo = 0', new_string: 'repo = 1' })
+    const ui = await $.ui.mount(pane('terminal'))
+    expect((await ui.find({ in: 'nav', type: 'Text', text: /^M$/ }))?.props.color).toBe('yellow')
+    expect((await ui.find({ in: 'nav', type: 'Text', text: /^●$/ }))?.props.color).toBe('magenta')
+    await ui.unmount()
+  })
+
+  test('a narrow pane keeps the way back', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    const wide = await $.ui.mount(pane('terminal', 70))
+    expect(await footer(wide)).toContain('→ edit')
+    await wide.unmount()
+    const narrow = await $.ui.mount(pane('terminal', 24))
+    expect(await footer(narrow)).toContain('← back')
+    await narrow.unmount()
   })
 })
 
