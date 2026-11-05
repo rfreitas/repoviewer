@@ -487,6 +487,27 @@ describe('the title row and the status line, in every view', () => {
   })
 })
 
+describe('the bottom of the page', () => {
+  test('the next paragraph shows as far as there is room, not only when it fits whole', SLOW, async ($, on) => {
+    const LONG = Array.from({ length: 60 }, () => 'word').join(' ')
+    // 26 one-row lines (13 short paragraphs and the blank lines between), then a paragraph of nine rows
+    // against two rows left.
+    const page = [...Array.from({ length: 13 }, (_, i) => `p${i}\n`), LONG, ''].join('\n')
+    fixture(on, { ...FILES, 'P.md': page })
+    await $.command.run(run('files', 'P.md'))
+    const ui = await $.ui.mount(pane('terminal', 40))
+    const text = String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
+    expect(text).toContain('p12')
+    expect(text).toContain('word word word')
+    expect(text).not.toContain(LONG)
+    // Cut to about two rows of a 39 cell page, not left at a word.
+    const shown = text.slice(text.indexOf('word'))
+    expect(shown.length).toBeGreaterThan(30)
+    expect(shown.length).toBeLessThan(80)
+    await ui.unmount()
+  })
+})
+
 describe('typing while scrolled', () => {
   test('a letter goes to the prompt, and the pane it reopens keeps the place in the file', SLOW, async ($, on) => {
     const fx = fixture(on)

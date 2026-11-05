@@ -415,6 +415,19 @@ function renderedRows(line: string, columns: number): number {
   return Math.max(1, Math.ceil((text.length + 4) / Math.max(10, columns - 2)))
 }
 
+/** `line` cut to the `room` rows left under `columns`, so the next paragraph shows as far as there is
+ * space instead of waiting until it fits whole. Undefined where a part is no use: a heading or a table row. */
+function fit(line: string, room: number, columns: number): string | undefined {
+  const text = line.trim()
+  if (room < 1 || text.startsWith('|') || /^#{1,6}\s/.test(text)) return undefined
+  const chars = room * Math.max(10, columns - 2) - 4
+  if (line.length <= chars) return line
+  const head = line.slice(0, chars)
+  const space = head.lastIndexOf(' ')
+
+  return (space > chars / 2 ? head.slice(0, space) : head).trimEnd()
+}
+
 /** The header and rule of the table that line `i` is inside, when `i` is neither of them: what a window starting there is missing. */
 function tableHead(lines: string[], i: number): string[] {
   const isRow = (n: number): boolean => lines[n]?.trim().startsWith('|') === true
@@ -475,14 +488,23 @@ function markdownBlocks(f: NavFile, top: number, body: number, columns: number):
     if (prev !== undefined && i > idx && continues(prev, l) && fenceOpener(lines, i) === undefined) {
       const joined = `${prev.trimEnd()} ${l.trim()}`
       const grew = renderedRows(joined, columns) - renderedRows(prev, columns)
-      if (rows + grew > body || chars + l.length + 1 > BUDGET) break
+      if (chars + l.length + 1 > BUDGET) break
+      if (rows + grew > body) {
+        const part = fit(joined, body - rows + renderedRows(prev, columns), columns)
+        if (part) out[out.length - 1] = part
+        break
+      }
       out[out.length - 1] = joined
       chars += l.length + 1
       rows += grew
       continue
     }
     const cost = renderedRows(l, columns)
-    if (rows + cost > body && (blocks.length > 0 || out.length > 0)) break
+    if (rows + cost > body && (blocks.length > 0 || out.length > 0)) {
+      const part = fit(l, body - rows, columns)
+      if (part) out.push(part)
+      break
+    }
     if (chars + l.length + 1 > BUDGET && out.length > 0) break
     out.push(l)
     chars += l.length + 1
