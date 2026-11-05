@@ -21,14 +21,18 @@ const value = <T,>(it: T) => ({ value: it })
 const ok = (stdout: string) => value({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const fail = () => value({ exitCode: 1, stdout: '', stderr: 'no', isStdoutTruncated: false, isStderrTruncated: false })
 
-const relOf = (path: string) => (path.startsWith(`${ROOT}/`) ? path.slice(ROOT.length + 1) : path)
+// On Windows paths come back as C:\repo\file: one spelling for the in-memory repo.
+const relOf = (path: string) => {
+  const p = path.replaceAll('\\', '/').replace(/^[A-Za-z]:/, '')
+  return p.startsWith(`${ROOT}/`) ? p.slice(ROOT.length + 1) : p
+}
 
 /** What the plugin did beneath it, for the tests to check. */
-export type Seen = { open: Set<string>; closes: number; filled: string[]; written: Record<string, string>; stored: Record<string, unknown> }
+export type Seen = { hidden: boolean; open: Set<string>; closes: number; filled: string[]; written: Record<string, string>; stored: Record<string, unknown> }
 
 export function fixture(on: On, files: Record<string, string> = { ...FILES }) {
   const open = new Set<string>()
-  const seen: Seen = { open, closes: 0, filled: [], written: {}, stored: {} }
+  const seen: Seen = { hidden: false, open, closes: 0, filled: [], written: {}, stored: {} }
   const mtimes: Record<string, number> = {}
   const isDir = (rel: string) => rel === ROOT || Object.keys(files).some(file => file.startsWith(`${rel}/`))
 
@@ -38,7 +42,7 @@ export function fixture(on: On, files: Record<string, string> = { ...FILES }) {
   on('ui.panes', () => value([...open].map(id => ({ id, title: id, isShown: true, isFocused: false, isPlaced: true }))))
   on('ui.open', (_$, e) => {
     open.add(e.id)
-    return value({ isPlaced: true as const })
+    return value(seen.hidden ? { isPlaced: false as const, reason: 'terminal too narrow' } : { isPlaced: true as const })
   })
   on('ui.close', (_$, e) => {
     open.delete(e.id)

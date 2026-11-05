@@ -230,6 +230,15 @@ describe('file view', () => {
   })
 })
 
+describe('a pane that stays hidden', () => {
+  test('is reported to Claude, not claimed shown', SLOW, async ($, on) => {
+    fixture(on).seen.hidden = true
+    const shown = await $.tool.call({ tool: 'mcp__kesav__show_file', path: 'README.md' } as never)
+    expect(String(shown.result)).toContain('hidden')
+    expect(String(shown.result)).toContain('/files')
+  })
+})
+
 describe('editing in the pane', () => {
   test('→ edits, typing changes the buffer, ctrl+s saves the whole file', SLOW, async ($, on) => {
     const fx = fixture(on)

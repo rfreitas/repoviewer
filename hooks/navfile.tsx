@@ -25,6 +25,8 @@ export type FileState = {
   /** A save was refused because the file changed on disk: the next ctrl+s forces. */
   isConflict: boolean
   lineAt: number
+  /** The `props.scroll` already applied. */
+  scrollSeen: number
   // Extras (optional, so nav.tsx need not know them):
   /** Diff: lines already scrolled off the top of the first visible hunk. */
   diffTop?: number
@@ -120,7 +122,7 @@ function extent(f: NavFile): { start: number; lines: string[]; last: number } {
 // --------------------------------------------------------------------------- state
 
 function blank(props: NavProps): FileState {
-  return { path: props.file?.path ?? '', mtimeMs: props.file?.mtimeMs ?? 0, top: 1, line: 1, hunk: 0, isConflict: false, lineAt: props.lineAt }
+  return { path: props.file?.path ?? '', mtimeMs: props.file?.mtimeMs ?? 0, top: 1, line: 1, hunk: 0, isConflict: false, lineAt: props.lineAt, scrollSeen: props.scroll }
 }
 
 /** The view fields kept inside the file and the cursor in the window. Returns `s` when nothing changes. */
@@ -211,6 +213,12 @@ function sync(s: FileState, props: NavProps): FileState {
       n = { ...n, lineAt: props.lineAt }
       if (props.line !== undefined) n = { ...n, line: props.line, top: props.line - Math.floor(Math.max(1, body) / 3) }
     }
+    if (props.scroll !== n.scrollSeen) {
+      // The wheel moves the window, and the cursor only as far as it must to stay inside it.
+      const top = n.top + props.scroll - n.scrollSeen
+      const line = clamp(n.line, top, top + Math.max(1, body) - 1)
+      n = { ...n, scrollSeen: props.scroll, ...(isTextual(f) && !hasDiffView(f) ? { top, line } : {}) }
+    }
     if (f.mtimeMs !== n.mtimeMs) n = { ...n, mtimeMs: f.mtimeMs }
   }
 
@@ -246,6 +254,7 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
       hunk: 0,
       isConflict: false,
       lineAt: props.lineAt,
+      scrollSeen: props.scroll,
       diffTop: 0,
       page: f.page,
       noticeAt: props.notice?.at ?? 0,

@@ -47,6 +47,7 @@ const DEFAULT_VIEW: RepoView = {
   follow: true,
   cursorAt: 0,
   lineAt: 0,
+  scroll: 0,
 }
 
 const index = atom({ plugin: 'kesav', key: 'index' } as const, null)
@@ -84,6 +85,8 @@ let sizedFor = 0
 /** How many times the pane has drawn: leavePane waits on it to see the reopened pane drawn. */
 let draws = 0
 const WIDTH_PERCENT = 40
+/** Lines of the open file one tick of the wheel moves. */
+const WHEEL_LINES = 3
 
 /** The dock width to ask for: 40% of the terminal, at least 44 columns so code stays readable, at
  * most 100 so a wide screen keeps its transcript, and never leaving Claude under 70 columns. Below
@@ -255,7 +258,7 @@ async function showFile($: Engine, path: string, line?: number) {
     ...(line !== undefined ? { line, lineAt: v.lineAt + 1 } : { line: undefined }),
     expanded: [...new Set([...v.expanded, ...parentDirs(path)])],
   }))
-  await openPane($)
+  return openPane($)
 }
 
 const collapsed = (expanded: string[], dir: string) =>
@@ -473,6 +476,14 @@ export const register: Register = on => {
     return {}
   })
 
+  // The wheel over the pane: the Client draws its own window and never sees it, so the file's
+  // scroll is handed down as a running total. A tree stays the engine's.
+  on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
+    if ((await read($, view)).mode !== 'file') return next(e)
+    await setView($, v => ({ ...v, scroll: v.scroll + e.by * WHEEL_LINES }))
+    return {}
+  })
+
   on('tool.call', { tool: TOOL }, async ($, e) => {
     const input = e as unknown as { path?: unknown; line?: unknown }
     const repo = (await read($, index)) ?? (await refreshAll($), await read($, index))
@@ -480,7 +491,13 @@ export const register: Register = on => {
     const path = toRepoPath(repo.root, await $.session.cwd(), input.path)
     if (path === undefined) return { result: `${input.path} is outside the repo at ${repo.root}.` }
     if (!(await $.fs.exists(`${repo.root}/${path}`))) return { result: `${path} does not exist.` }
-    await showFile($, path, typeof input.line === 'number' ? input.line : undefined)
+    const opened = await showFile($, path, typeof input.line === 'number' ? input.line : undefined)
+    await $.store.set(OPEN_KEY, true)
+    // A pane a tool opens is unasked: on a narrow terminal it waits undrawn until the person runs /files.
+    if (!opened.isPlaced) {
+      $.ui.toast(`repoviewer: ${path} is ready. Run /files to show the pane.`)
+      return { result: `Opened ${path}, but the pane is hidden (${opened.reason}). Ask the user to run /files to show it.` }
+    }
     return { result: `Showing ${path} in the repo pane.` }
   })
 
@@ -553,6 +570,7 @@ export const register: Register = on => {
       cursorAt: current.cursorAt,
       line: current.line,
       lineAt: current.lineAt,
+      scroll: current.scroll,
       editing: current.editing,
       notice: current.notice,
     }

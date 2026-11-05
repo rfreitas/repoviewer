@@ -43,6 +43,8 @@ export type RepoView = {
   /** The 1-based line the viewer should bring into view (show_file, follow), with its own bump. */
   line?: number
   lineAt: number
+  /** Lines the wheel has scrolled the open file by, summed since the session began; the Client applies the change since it last looked. */
+  scroll: number
   /** The last outcome the Client should show (saved, conflict, error). */
   notice?: { text: string; tone: 'info' | 'warn' | 'error'; at: number }
 }
@@ -99,6 +101,7 @@ export type NavProps = {
   cursorAt: number
   line?: number
   lineAt: number
+  scroll: number
   editing?: string
   notice?: { text: string; tone: 'info' | 'warn' | 'error'; at: number }
 }

@@ -24,7 +24,7 @@ export type NavState = {
   file: FileState | undefined
   /** The props last adopted from. */
   lastProps: NavProps
-  /** `path|mtimeMs|lineAt` of the file adopted into `file` ('' none): adoption happens once per change. */
+  /** `path|mtimeMs|lineAt|scroll` of the file adopted into `file` ('' none): adoption happens once per change. */
   fileSeen: string
 }
 
@@ -228,7 +228,7 @@ function topFor(state: NavState, props: NavProps): number {
 
 function fileSeenKey(props: NavProps): string {
   if (props.mode !== 'file' || !props.file) return ''
-  return `${props.file.path}|${props.file.mtimeMs}|${props.lineAt}`
+  return `${props.file.path}|${props.file.mtimeMs}|${props.lineAt}|${props.scroll}`
 }
 
 /**
