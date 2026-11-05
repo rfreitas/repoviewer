@@ -407,6 +407,25 @@ function renderedRows(line: string, columns: number): number {
   return Math.max(1, Math.ceil((text.length + 4) / Math.max(10, columns - 2)))
 }
 
+/** A table too wide for `columns` as a list, which the renderer can wrap: it draws a wide table's
+ * cells onto several lines but its borders onto one, so the grid tears. Each row becomes its first
+ * cell in bold with a "header: value" line for every other cell. Undefined when the lines are not a
+ * table (no header rule) or the table fits. */
+function stackTable(block: string[], columns: number): string[] | undefined {
+  const cells = (l: string): string[] => l.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim())
+  const rows = block.map(cells)
+  const head = rows[0]
+  if (!head || !rows[1]?.every(c => /^:?-+:?$/.test(c))) return undefined
+  const widths = head.map((_, c) => Math.max(...rows.map((r, i) => (i === 1 ? 0 : (r[c] ?? '').length))))
+  if (widths.reduce((n, w) => n + w + 3, 1) <= columns) return undefined
+  const out: string[] = []
+  for (const row of rows.slice(2)) {
+    out.push(`**${row[0] ?? ''}**`, ...head.slice(1).map((h, c) => `- ${h}: ${row[c + 1] ?? ''}`), '')
+  }
+
+  return out
+}
+
 function markdownSource(f: NavFile, top: number, body: number, columns: number): string {
   const { start, lines } = extent(f)
   const idx = clamp(top - start, 0, Math.max(0, lines.length - 1))
@@ -433,6 +452,21 @@ function markdownSource(f: NavFile, top: number, body: number, columns: number):
       continue
     }
     const isRow = l.trim().startsWith('|')
+    if (isRow && !inTable) {
+      let end = i
+      while (end + 1 < lines.length && lines[end + 1]!.trim().startsWith('|')) end++
+      const stacked = stackTable(lines.slice(i, end + 1).map(row => slice(clean(row), 2000)), columns)
+      if (stacked) {
+        const cost = stacked.reduce((n, s) => n + renderedRows(s, columns), 0)
+        const size = stacked.reduce((n, s) => n + s.length + 1, 0)
+        if ((rows + cost > body || chars + size > BUDGET) && out.length > 0) break
+        out.push(...stacked)
+        chars += size
+        rows += cost
+        i = end
+        continue
+      }
+    }
     // A table's top border and header rule.
     const cost = renderedRows(l, columns) + (isRow && !inTable ? 2 : 0)
     if (rows + cost > body && out.length > 0) break

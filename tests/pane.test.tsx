@@ -230,6 +230,38 @@ describe('file view', () => {
   })
 })
 
+describe('a table wider than the pane', () => {
+  const TABLE = [
+    '# T',
+    '',
+    '| Kind | What it is |',
+    '| --- | --- |',
+    '| fork | a fresh subagent that carries the whole session along with it |',
+    '| plain | a fresh subagent |',
+    '',
+    'after',
+    '',
+  ].join('\n')
+  const SMALL = ['| a | b |', '| - | - |', '| 1 | 2 |', ''].join('\n')
+  const markdown = async (ui: Finder) => String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
+
+  test('is drawn as a list, which wraps; a table that fits stays a table', SLOW, async ($, on) => {
+    fixture(on, { ...FILES, 'T.md': TABLE, 'S.md': SMALL })
+    await $.command.run(run('files', 'T.md'))
+    const wide = await $.ui.mount(pane('terminal', 40))
+    const text = await markdown(wide)
+    expect(text).toContain('**fork**\n- What it is: a fresh subagent that carries')
+    expect(text).not.toContain('| fork |')
+    expect(text).toContain('after')
+    await wide.unmount()
+
+    await $.command.run(run('files', 'S.md'))
+    const small = await $.ui.mount(pane('terminal', 40))
+    expect(await markdown(small)).toContain('| 1 | 2 |')
+    await small.unmount()
+  })
+})
+
 describe('a pane that stays hidden', () => {
   test('is reported to Claude, not claimed shown', SLOW, async ($, on) => {
     fixture(on).seen.hidden = true
