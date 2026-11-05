@@ -524,6 +524,24 @@ describe('filling the page', () => {
   })
 })
 
+describe('scrolling by rows in the pane', () => {
+  test('the page starts partway into a long paragraph, and the rows above it are gone', SLOW, async ($, on) => {
+    const words = Array.from({ length: 60 }, () => 'word').join(' ')
+    fixture(on, { ...FILES, 'L.md': ['# T', '', words, '', 'tail', ''].join('\n') })
+    await $.command.run(run('files', 'L.md'))
+    const ui = await $.ui.mount(pane('terminal', 60))
+    const count = async () => (String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text).match(/word/g) ?? []).length
+    // Down: past the heading, onto the paragraph, then one row of it (eleven words) off.
+    await ui.key({ key: 'down', in: 'nav' })
+    expect(await count()).toBe(60)
+    await ui.key({ key: 'down', in: 'nav' })
+    expect(await count()).toBe(49)
+    await ui.key({ key: 'up', in: 'nav' })
+    expect(await count()).toBe(60)
+    await ui.unmount()
+  })
+})
+
 describe('typing while scrolled', () => {
   test('a letter goes to the prompt, and the pane it reopens keeps the place in the file', SLOW, async ($, on) => {
     const fx = fixture(on)

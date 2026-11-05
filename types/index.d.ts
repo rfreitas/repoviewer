@@ -112,7 +112,7 @@ export type NavProps = {
 /** What the Client posts to the hooks module (`ui.message` e.data). One post per key press:
  * a later post in the same frame replaces an undelivered one. */
 /** A file view's position: the window's first line and the cursor line. */
-export type NavResume = { path: string; top: number; line: number }
+export type NavResume = { path: string; top: number; line: number; skip?: number }
 
 export type NavOp =
   | { op: 'cursor'; path: string }

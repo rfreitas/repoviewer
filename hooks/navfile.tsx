@@ -28,6 +28,8 @@ export type FileState = {
   /** A save was refused because the file changed on disk: the next ctrl+s forces. */
   isConflict: boolean
   lineAt: number
+  /** Rendered markdown: rows of the paragraph at `top` already scrolled off, so a long paragraph goes by a row at a time, not all at once. */
+  rowSkip?: number
   /** The status-line button under the pointer (its label): drawn lit, as a Button is under the engine's hover. */
   hover?: string
   /** The `props.scroll` already applied. */
@@ -138,6 +140,7 @@ function clampView(s: FileState, props: NavProps): FileState {
   const viewRows = Math.max(1, body)
   let { top, line, hunk } = s
   let diffTop = s.diffTop ?? 0
+  let skip = s.rowSkip ?? 0
   if (hasDiffView(f)) {
     const hunks = parseHunks(f.diff?.hunks ?? '')
     hunk = clamp(hunk, 0, Math.max(0, hunks.length - 1))
@@ -148,16 +151,18 @@ function clampView(s: FileState, props: NavProps): FileState {
     if (isRendered(f)) {
       top = clamp(top, start, end)
       line = top
+      skip = clamp(skip, 0, rowCounter(f, props).rows(top) - 1)
     } else {
+      skip = 0
       line = clamp(line, start, end)
       if (line < top) top = line
       else if (line >= top + viewRows) top = line - viewRows + 1
       top = clamp(top, start, Math.max(start, end - viewRows + 1))
     }
   }
-  if (top === s.top && line === s.line && hunk === s.hunk && diffTop === (s.diffTop ?? 0)) return s
+  if (top === s.top && line === s.line && hunk === s.hunk && diffTop === (s.diffTop ?? 0) && skip === (s.rowSkip ?? 0)) return s
 
-  return { ...s, top, line, hunk, diffTop }
+  return { ...s, top, line, hunk, diffTop, rowSkip: skip }
 }
 
 /** New props for the same file while a buffer is open: the external-change rules. */
@@ -216,13 +221,16 @@ function sync(s: FileState, props: NavProps): FileState {
     }
     if (props.lineAt !== n.lineAt) {
       n = { ...n, lineAt: props.lineAt }
-      if (props.line !== undefined) n = { ...n, line: props.line, top: props.line - Math.floor(Math.max(1, body) / 3) }
+      if (props.line !== undefined) n = { ...n, line: props.line, top: props.line - Math.floor(Math.max(1, body) / 3), rowSkip: 0 }
     }
     if (props.scroll !== n.scrollSeen) {
       // The wheel moves the window, and the cursor only as far as it must to stay inside it.
-      const top = n.top + props.scroll - n.scrollSeen
+      const by = props.scroll - n.scrollSeen
+      const top = n.top + by
       const line = clamp(n.line, top, top + Math.max(1, body) - 1)
-      n = { ...n, scrollSeen: props.scroll, ...(isTextual(f) && !hasDiffView(f) ? { top, line } : {}) }
+      n = { ...n, scrollSeen: props.scroll }
+      if (isRendered(f)) n = moveRows(n, f, props, by)
+      else if (isTextual(f) && !hasDiffView(f)) n = { ...n, top, line }
     }
     if (f.mtimeMs !== n.mtimeMs) n = { ...n, mtimeMs: f.mtimeMs }
   }
@@ -245,12 +253,14 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
   const start = Math.max(1, Math.floor(f.startLine) || 1)
   let line = start
   let top = start
+  let skip = 0
   if (props.line !== undefined) {
     line = props.line
     top = line - Math.floor(Math.max(1, body) / 3)
   } else if (props.resume?.path === f.path) {
     // The pane was closed and reopened to hand the keys to the prompt: pick up where the view was.
     ;({ top, line } = props.resume)
+    skip = props.resume.skip ?? 0
   }
 
   return clampView(
@@ -263,6 +273,7 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
       isConflict: false,
       lineAt: props.lineAt,
       scrollSeen: props.scroll,
+      rowSkip: skip,
       diffTop: 0,
       page: f.page,
       noticeAt: props.notice?.at ?? 0,
@@ -420,21 +431,36 @@ function renderedRows(line: string, columns: number): number {
 /** The lines `text` takes when wrapped at spaces to `width` cells (a word longer than that is split). A cell of
  * margin is left, and the markup in the source is counted though it draws as nothing, so the count errs tall by little. */
 function wrapRows(text: string, width: number): number {
-  let rows = 1
+  return wrapStarts(text.split(/\s+/).filter(Boolean), width).rows
+}
+
+/** Where wrapping `words` to `width` starts each one (a row, from 0), and how many rows it comes to. */
+function wrapStarts(words: string[], width: number): { starts: number[]; rows: number } {
+  const starts: number[] = []
+  let row = 0
   let used = 0
-  for (const word of text.split(/\s+/).filter(Boolean)) {
+  for (const word of words) {
     if (used > 0 && used + 1 + word.length > width) {
-      rows += 1
+      row += 1
       used = 0
     }
+    starts.push(row)
     used += (used > 0 ? 1 : 0) + word.length
     if (used > width) {
-      rows += Math.ceil(used / width) - 1
+      row += Math.ceil(used / width) - 1
       used = used % width || width
     }
   }
 
-  return rows
+  return { starts, rows: row + 1 }
+}
+
+/** `text` without its first `skip` wrapped rows: from the first word that starts on a later row. */
+function fromRow(text: string, skip: number, width: number): string {
+  const words = text.split(/\s+/).filter(Boolean)
+  const k = wrapStarts(words, width).starts.findIndex(row => row >= skip)
+
+  return words.slice(k < 0 ? words.length - 1 : k).join(' ')
 }
 
 /** `line` cut to the `room` rows left under `columns`, so the next paragraph shows as far as there is
@@ -448,6 +474,54 @@ function fit(line: string, room: number, columns: number): string | undefined {
   while (k > 0 && wrapRows(words.slice(0, k).join(' '), Math.max(10, columns - 1)) > room) k--
 
   return k > 0 ? indent + words.slice(0, k).join(' ') : undefined
+}
+
+/** Whether source line `n` is prose that wraps, so scrolling can go through its rows one at a time. A heading, a
+ * table row, a code line or a blank line goes whole. */
+function isFlow(lines: string[], start: number, n: number): boolean {
+  const text = (lines[n - start] ?? '').trim()
+
+  return text !== '' && !text.startsWith('|') && !/^(#{1,6}\s|```|~~~)/.test(text) && fenceOpener(lines, n - start) === undefined
+}
+
+/** The rows rendered markdown scrolls by: a paragraph takes as many as it wraps to, anything else one. */
+function rowCounter(f: NavFile, props: NavProps) {
+  const { start, lines, last } = extent(f)
+  const columns = Math.max(1, dims(props).columns - 1)
+
+  return {
+    start,
+    end: Math.max(start, last),
+    isBlank: (n: number): boolean => (lines[n - start] ?? '').trim() === '',
+    rows: (n: number): number => (isFlow(lines, start, n) ? renderedRows(lines[n - start]!, columns) : 1),
+  }
+}
+
+/** The rendered view `n` rows further down, or up when negative: blank lines are passed over, a paragraph goes a row
+ * at a time. Scrolling by source lines instead would go a whole paragraph at once. */
+function moveRows(s: FileState, f: NavFile, props: NavProps, n: number): FileState {
+  const { start, end, isBlank, rows } = rowCounter(f, props)
+  let top = s.top
+  let skip = s.rowSkip ?? 0
+  for (let i = 0; i < Math.abs(n); i++) {
+    if (n > 0) {
+      if (skip + 1 < rows(top)) skip += 1
+      else if (top >= end) break
+      else {
+        top += 1
+        while (top < end && isBlank(top)) top += 1
+        skip = 0
+      }
+    } else if (skip > 0) skip -= 1
+    else if (top <= start) break
+    else {
+      top -= 1
+      while (top > start && isBlank(top)) top -= 1
+      skip = rows(top) - 1
+    }
+  }
+
+  return { ...s, top, line: top, rowSkip: skip }
 }
 
 /** The header and rule of the table that line `i` is inside, when `i` is neither of them: what a window starting there is missing. */
@@ -464,7 +538,7 @@ function tableHead(lines: string[], i: number): string[] {
 type Block = { md: string } | { table: Table }
 
 /** The blocks drawn from line `top`: enough lines to fill `body` rows (the Box clips the rest), each prose block within the Markdown limit. */
-function markdownBlocks(f: NavFile, top: number, body: number, columns: number): Block[] {
+function markdownBlocks(f: NavFile, top: number, skip: number, body: number, columns: number): Block[] {
   const { start, lines } = extent(f)
   const idx = clamp(top - start, 0, Math.max(0, lines.length - 1))
   const opener = fenceOpener(lines, idx)
@@ -486,7 +560,9 @@ function markdownBlocks(f: NavFile, top: number, body: number, columns: number):
     rows += 1
   }
   for (let i = idx; i < lines.length; i++) {
-    const l = slice(clean(lines[i]!), 2000)
+    // A paragraph the view has scrolled into starts at the row it has reached.
+    const first = i === idx && skip > 0 && isFlow(lines, start, i + start)
+    const l = first ? fromRow(slice(clean(lines[i]!), 2000), skip, Math.max(10, columns - 1)) : slice(clean(lines[i]!), 2000)
     if (l.trim().startsWith('|') && fenceOpener(lines, i) === undefined) {
       let end = i
       while (end + 1 < lines.length && lines[end + 1]!.trim().startsWith('|')) end++
@@ -770,7 +846,7 @@ function renderedBody(el: ClientElements, s: FileState, f: NavFile, props: NavPr
     // minHeight keeps the status line at the pane's foot when the markdown is short; a fixed height
     // with overflow hidden would overprint in the terminal, so the source itself is cut to fit.
     <Box flexDirection="column" width={columns} minHeight={body} flexShrink={0} paddingLeft={1}>
-      {markdownBlocks(f, s.top, body, Math.max(1, columns - 1)).map(block =>
+      {markdownBlocks(f, s.top, s.rowSkip ?? 0, body, Math.max(1, columns - 1)).map(block =>
         'md' in block ? (
           <Markdown text={block.md} />
         ) : (
@@ -1145,7 +1221,7 @@ function diffKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, p
 function viewKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, post: (op: NavOp) => void): FileState {
   // No letter commands in view mode: typing goes to Claude Code's prompt.
   if (isPrintable(k)) {
-    post({ op: 'type', text: k.key, resume: { path: f.path, top: s.top, line: s.line } })
+    post({ op: 'type', text: k.key, resume: { path: f.path, top: s.top, line: s.line, skip: s.rowSkip ?? 0 } })
 
     return s
   }
@@ -1180,28 +1256,16 @@ function viewKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, p
   }
 
   if (rendered) {
-    // Rendered markdown scrolls by source lines (blank lines skipped, so each press moves something).
-    const lines = extent(f).lines
-    const at = (n: number): string => lines[n - start] ?? ''
-    const scroll = (top: number): FileState => ({ ...s, top: clamp(top, start, end), line: clamp(top, start, end) })
-    if (key === 'down') {
-      if (atEnd) return s
-      let t = s.top + 1
-      while (t < end && at(t).trim() === '') t++
-
-      return scroll(t)
-    }
-    if (key === 'up') {
-      if (atStart) return s
-      let t = s.top - 1
-      while (t > start && at(t).trim() === '') t--
-
-      return scroll(t)
-    }
-    if (key === 'pagedown') return atEnd ? nextPage() : scroll(s.top + Math.max(1, viewRows - 2))
-    if (key === 'pageup') return atStart ? prevPage() : scroll(s.top - Math.max(1, viewRows - 2))
-    if (key === 'home') return scroll(start)
-    if (key === 'end') return scroll(end - viewRows + 1)
+    // Rendered markdown scrolls by the rows it draws (blank lines skipped, so each press moves something).
+    const rows = rowCounter(f, props)
+    const isAtLastRow = s.top >= end && (s.rowSkip ?? 0) + 1 >= rows.rows(end)
+    const isAtFirstRow = s.top <= start && (s.rowSkip ?? 0) === 0
+    if (key === 'down') return moveRows(s, f, props, 1)
+    if (key === 'up') return moveRows(s, f, props, -1)
+    if (key === 'pagedown') return isAtLastRow ? nextPage() : moveRows(s, f, props, Math.max(1, viewRows - 2))
+    if (key === 'pageup') return isAtFirstRow ? prevPage() : moveRows(s, f, props, -Math.max(1, viewRows - 2))
+    if (key === 'home') return { ...s, top: start, line: start, rowSkip: 0 }
+    if (key === 'end') return moveRows({ ...s, top: end, line: end, rowSkip: rows.rows(end) - 1 }, f, props, -(viewRows - 1))
 
     return s
   }
