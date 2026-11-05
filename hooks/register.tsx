@@ -85,8 +85,6 @@ let sizedFor = 0
 /** How many times the pane has drawn: leavePane waits on it to see the reopened pane drawn. */
 let draws = 0
 const WIDTH_PERCENT = 40
-/** Lines of the open file one tick of the wheel moves. */
-const WHEEL_LINES = 3
 
 /** The dock width to ask for: 40% of the terminal, at least 44 columns so code stays readable, at
  * most 100 so a wide screen keeps its transcript, and never leaving Claude under 70 columns. Below
@@ -477,10 +475,11 @@ export const register: Register = on => {
   })
 
   // The wheel over the pane: the Client draws its own window and never sees it, so the file's
-  // scroll is handed down as a running total. A tree stays the engine's.
+  // scroll is handed down as a running total, rows as the engine counts them (a tick is one at
+  // rest, more as ticks crowd), as in the transcript. A tree stays the engine's.
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
     if ((await read($, view)).mode !== 'file') return next(e)
-    await setView($, v => ({ ...v, scroll: v.scroll + e.by * WHEEL_LINES }))
+    await setView($, v => ({ ...v, scroll: v.scroll + e.by }))
     return {}
   })
 
