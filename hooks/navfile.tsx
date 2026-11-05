@@ -11,6 +11,8 @@ import type { ClientElements, ClientKeyEvent, ClientPointerEvent, RenderElement 
 import type { NavFile, NavOp, NavProps } from '../types'
 import { applyKey, displayCol, fromText, scrollIntoView, toText, view } from './editor'
 import type { Buffer } from './editor'
+import { layoutTable, parseTable } from './table'
+import type { Table } from './table'
 
 export type FileState = {
   path: string
@@ -407,25 +409,6 @@ function renderedRows(line: string, columns: number): number {
   return Math.max(1, Math.ceil((text.length + 4) / Math.max(10, columns - 2)))
 }
 
-/** A table too wide for `columns` as a list, which the renderer can wrap: it draws a wide table's
- * cells onto several lines but its borders onto one, so the grid tears. Each row becomes its first
- * cell in bold with a "header: value" line for every other cell. Undefined when the lines are not a
- * table (no header rule) or the table fits. */
-function stackTable(block: string[], columns: number): string[] | undefined {
-  const cells = (l: string): string[] => l.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim())
-  const rows = block.map(cells)
-  const head = rows[0]
-  if (!head || !rows[1]?.every(c => /^:?-+:?$/.test(c))) return undefined
-  const widths = head.map((_, c) => Math.max(...rows.map((r, i) => (i === 1 ? 0 : (r[c] ?? '').length))))
-  if (widths.reduce((n, w) => n + w + 3, 1) <= columns) return undefined
-  const out: string[] = []
-  for (const row of rows.slice(2)) {
-    out.push(`**${row[0] ?? ''}**`, ...head.slice(1).map((h, c) => `- ${h}: ${row[c + 1] ?? ''}`), '')
-  }
-
-  return out
-}
-
 /** The header and rule of the table that line `i` is inside, when `i` is neither of them: what a window starting there is missing. */
 function tableHead(lines: string[], i: number): string[] {
   const isRow = (n: number): boolean => lines[n]?.trim().startsWith('|') === true
@@ -436,21 +419,50 @@ function tableHead(lines: string[], i: number): string[] {
   return [start, start + 1].filter(n => n < i).map(n => lines[n]!)
 }
 
-function markdownSource(f: NavFile, top: number, body: number, columns: number): string {
+/** What the rendered view is made of: prose for the Markdown element, tables the pane draws itself. */
+type Block = { md: string } | { table: Table }
+
+/** The blocks drawn from line `top`: enough lines to fill `body` rows (the Box clips the rest), each prose block within the Markdown limit. */
+function markdownBlocks(f: NavFile, top: number, body: number, columns: number): Block[] {
   const { start, lines } = extent(f)
   const idx = clamp(top - start, 0, Math.max(0, lines.length - 1))
   const opener = fenceOpener(lines, idx)
-  const out: string[] = []
+  const blocks: Block[] = []
+  let out: string[] = []
   let chars = 0
   let rows = 0
+  // A fence left open would swallow nothing after it, but keeps the renderer from guessing.
+  const flush = () => {
+    if (out.length === 0) return
+    if (fenceOpener(out, out.length) !== undefined) out.push('```')
+    blocks.push({ md: slice(out.join('\n'), LIMIT) })
+    out = []
+    chars = 0
+  }
   if (opener !== undefined) {
     out.push(clean(opener))
     chars += out[0]!.length + 1
     rows += 1
   }
-  let inTable = false
   for (let i = idx; i < lines.length; i++) {
     const l = slice(clean(lines[i]!), 2000)
+    if (l.trim().startsWith('|') && fenceOpener(lines, i) === undefined) {
+      let end = i
+      while (end + 1 < lines.length && lines[end + 1]!.trim().startsWith('|')) end++
+      // A window that starts inside a table borrows its header and rule.
+      const lead = i === idx ? tableHead(lines, i) : []
+      const cells = parseTable([...lead, ...lines.slice(i, end + 1)].map(row => slice(clean(row), 2000)))
+      if (cells) {
+        const table = layoutTable(cells, columns)
+        // A table starts only if it fits whole: else it opens the next screen. One taller than the pane still draws, cut, at the top.
+        if (rows + table.lines.length > body && (blocks.length > 0 || out.length > 0)) break
+        flush()
+        blocks.push({ table })
+        rows += table.lines.length
+        i = end
+        continue
+      }
+    }
     const prev = out[out.length - 1]
     if (prev !== undefined && i > idx && continues(prev, l) && fenceOpener(lines, i) === undefined) {
       const joined = `${prev.trimEnd()} ${l.trim()}`
@@ -461,51 +473,16 @@ function markdownSource(f: NavFile, top: number, body: number, columns: number):
       rows += grew
       continue
     }
-    const isRow = l.trim().startsWith('|')
-    if (isRow && !inTable) {
-      let end = i
-      while (end + 1 < lines.length && lines[end + 1]!.trim().startsWith('|')) end++
-      // A window that starts inside a table borrows its header and rule: rows without them draw as bare pipes.
-      const lead = i === idx ? tableHead(lines, i).map(row => slice(clean(row), 2000)) : []
-      const stacked = stackTable([...lead, ...lines.slice(i, end + 1).map(row => slice(clean(row), 2000))], columns)
-      if (!stacked && lead.length > 0) {
-        out.push(...lead)
-        chars += lead.reduce((n, s) => n + s.length + 1, 0)
-        rows += lead.length * 2
-        inTable = true
-      }
-      if (stacked) {
-        const cost = stacked.reduce((n, s) => n + renderedRows(s, columns), 0)
-        const size = stacked.reduce((n, s) => n + s.length + 1, 0)
-        if ((rows + cost > body || chars + size > BUDGET) && out.length > 0) break
-        out.push(...stacked)
-        chars += size
-        rows += cost
-        i = end
-        continue
-      }
-    }
-    // A table's top border and header rule.
-    const cost = renderedRows(l, columns) + (isRow && !inTable ? 2 : 0)
-    if (rows + cost > body && out.length > 0) break
-    // A table starts only if it fits whole (a cut one draws as an empty bordered row): else it
-    // opens the next screen. One taller than the pane still draws, cut, when it is at the top.
-    if (isRow && !inTable && out.length > 0) {
-      let end = i
-      while (end + 1 < lines.length && lines[end + 1]!.trim().startsWith('|')) end++
-      const tableRows = 3 + (end - i + 1) * 2
-      if (rows + tableRows > body) break
-    }
+    const cost = renderedRows(l, columns)
+    if (rows + cost > body && (blocks.length > 0 || out.length > 0)) break
     if (chars + l.length + 1 > BUDGET && out.length > 0) break
-    inTable = isRow
     out.push(l)
     chars += l.length + 1
     rows += cost
   }
-  // A fence left open would swallow nothing after it, but keeps the renderer from guessing.
-  if (fenceOpener(out, out.length) !== undefined) out.push('```')
+  flush()
 
-  return slice(out.join('\n'), LIMIT)
+  return blocks
 }
 
 // --------------------------------------------------------------------------- status line
@@ -702,7 +679,7 @@ function textBody(el: ClientElements, s: FileState, f: NavFile, props: NavProps)
 }
 
 function renderedBody(el: ClientElements, s: FileState, f: NavFile, props: NavProps): RenderElement {
-  const { Box, Markdown } = el
+  const { Box, Markdown, Text } = el
   const { columns, body } = dims(props)
   if (extent(f).lines.length === 0) return message(el, ['Empty file.'], columns, body)
 
@@ -710,7 +687,19 @@ function renderedBody(el: ClientElements, s: FileState, f: NavFile, props: NavPr
     // minHeight keeps the status line at the pane's foot when the markdown is short; a fixed height
     // with overflow hidden would overprint in the terminal, so the source itself is cut to fit.
     <Box flexDirection="column" width={columns} minHeight={body} flexShrink={0} paddingLeft={1}>
-      <Markdown text={markdownSource(f, s.top, body, Math.max(1, columns - 1))} />
+      {markdownBlocks(f, s.top, body, Math.max(1, columns - 1)).map(block =>
+        'md' in block ? (
+          <Markdown text={block.md} />
+        ) : (
+          <Box flexDirection="column">
+            {block.table.lines.map((line, k) => (
+              <Text bold={k >= 1 && k <= block.table.head} wrap="truncate-end">
+                {line}
+              </Text>
+            ))}
+          </Box>
+        ),
+      )}
     </Box>
   )
 }

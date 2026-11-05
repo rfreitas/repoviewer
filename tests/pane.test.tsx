@@ -230,7 +230,7 @@ describe('file view', () => {
   })
 })
 
-describe('a table wider than the pane', () => {
+describe('tables in the pane', () => {
   const TABLE = [
     '# T',
     '',
@@ -243,7 +243,46 @@ describe('a table wider than the pane', () => {
     '',
   ].join('\n')
   const SMALL = ['| a | b |', '| - | - |', '| 1 | 2 |', ''].join('\n')
-  const markdown = async (ui: Finder) => String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
+  // One Text per drawn line of the grid.
+  const grid = async (ui: Finder & { findAll: (q: { in?: string; type?: string; text?: RegExp }) => Promise<{ text: string }[]> }) =>
+    (await ui.findAll({ in: 'nav', type: 'Text', text: /^[│┌├└]/ })).map(found => found.text)
+  const longest = (rows: string[]) => Math.max(...rows.map(l => l.trimEnd().length))
+
+  test('a table that fits is one row a line, and a narrower pane redraws it wrapped to fit', SLOW, async ($, on) => {
+    fixture(on, { ...FILES, 'T.md': TABLE })
+    await $.command.run(run('files', 'T.md'))
+
+    const wide = await $.ui.mount(pane('terminal', 90))
+    const wideRows = await grid(wide)
+    expect(wideRows.some(l => l.includes('a fresh subagent that carries the whole session along with it'))).toBe(true)
+    expect(longest(wideRows)).toBeLessThanOrEqual(90)
+    await wide.unmount()
+
+    // The same table in each narrower pane: the whole grid fits, and the cell text is all still there.
+    let last = Infinity
+    for (const columns of [60, 40, 28]) {
+      const ui = await $.ui.mount(pane('terminal', columns))
+      const rows = await grid(ui)
+      expect(longest(rows)).toBeLessThanOrEqual(columns)
+      expect(rows.length).toBeGreaterThan(wideRows.length)
+      const flat = rows.map(l => l.replace(/[│┌┬┐├┼┤└┴┘─]/g, ' ')).join(' ').replace(/\s+/g, ' ')
+      expect(flat).toContain('fork')
+      expect(flat).toContain('whole session')
+      // Narrower never makes it shorter.
+      expect(rows.length).toBeGreaterThanOrEqual(last === Infinity ? 0 : last)
+      last = rows.length
+      expect(await drawn(ui)).toContain('after')
+      await ui.unmount()
+    }
+  })
+
+  test('a small table keeps its natural width', SLOW, async ($, on) => {
+    fixture(on, { ...FILES, 'S.md': SMALL })
+    await $.command.run(run('files', 'S.md'))
+    const ui = await $.ui.mount(pane('terminal', 60))
+    expect((await grid(ui)).some(l => /│ 1 +│ 2 +│/.test(l))).toBe(true)
+    await ui.unmount()
+  })
 
   test('a window that starts inside the table keeps its header', SLOW, async ($, on) => {
     fixture(on, { ...FILES, 'T.md': TABLE })
@@ -251,26 +290,10 @@ describe('a table wider than the pane', () => {
     const ui = await $.ui.mount(pane('terminal', 40))
     // Down skips the blank line: header, rule, then the first row is the window's top.
     for (let n = 0; n < 3; n++) await ui.key({ key: 'down', in: 'nav' })
-    const text = await markdown(ui)
-    expect(text).toContain('**fork**')
-    expect(text).not.toContain('| fork |')
+    const text = await drawn(ui)
+    expect(text).toContain('Kind')
+    expect(text).toContain('fork')
     await ui.unmount()
-  })
-
-  test('is drawn as a list, which wraps; a table that fits stays a table', SLOW, async ($, on) => {
-    fixture(on, { ...FILES, 'T.md': TABLE, 'S.md': SMALL })
-    await $.command.run(run('files', 'T.md'))
-    const wide = await $.ui.mount(pane('terminal', 40))
-    const text = await markdown(wide)
-    expect(text).toContain('**fork**\n- What it is: a fresh subagent that carries')
-    expect(text).not.toContain('| fork |')
-    expect(text).toContain('after')
-    await wide.unmount()
-
-    await $.command.run(run('files', 'S.md'))
-    const small = await $.ui.mount(pane('terminal', 40))
-    expect(await markdown(small)).toContain('| 1 | 2 |')
-    await small.unmount()
   })
 })
 
