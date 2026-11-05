@@ -484,6 +484,18 @@ export const register: Register = on => {
     return {}
   })
 
+  // The pane opened at session start is unasked, so on a terminal under 144 columns it waits undrawn, and
+  // so does one Claude opens with show_file. An open answering the person's own prompt is placed at any
+  // width and counts as asked (110 columns from then on): do it once, with the first prompt.
+  let isPromptSeen = false
+  on('prompt.submit', async ($, e, next) => {
+    if (!isPromptSeen) {
+      isPromptSeen = true
+      if ((await $.store.get(OPEN_KEY)) !== false) await openPane($)
+    }
+    return next(e)
+  })
+
   on('tool.call', { tool: TOOL }, async ($, e) => {
     const input = e as unknown as { path?: unknown; line?: unknown }
     const repo = (await read($, index)) ?? (await refreshAll($), await read($, index))
