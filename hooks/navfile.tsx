@@ -405,14 +405,36 @@ function continues(prev: string, line: string): boolean {
 
 /** The markdown source drawn from line `top`: enough lines to fill `body` rows (the Box clips the rest), within the limit. */
 /** Rows a markdown source line is likely to take once rendered `columns` wide: wrapped prose, a
- * table row with its rule, a heading with its gap. An estimate that errs tall, since a Markdown that
- * outgrows its box overprints the rows below it in the terminal rather than clipping. */
+ * table row with its rule, a heading with its gap. It must not come out short, since a Markdown that
+ * outgrows its box overprints the rows below it in the terminal rather than clipping; and not far too tall,
+ * which leaves blank rows above the status line. */
 function renderedRows(line: string, columns: number): number {
   const text = line.trim()
   if (text === '') return 1
   if (text.startsWith('|')) return 2
-  if (/^#{1,6}\s/.test(text)) return 2
-  return Math.max(1, Math.ceil((text.length + 4) / Math.max(10, columns - 2)))
+  const wrapped = wrapRows(text, Math.max(10, columns - 1))
+
+  return /^#{1,6}\s/.test(text) ? wrapped + 1 : wrapped
+}
+
+/** The lines `text` takes when wrapped at spaces to `width` cells (a word longer than that is split). A cell of
+ * margin is left, and the markup in the source is counted though it draws as nothing, so the count errs tall by little. */
+function wrapRows(text: string, width: number): number {
+  let rows = 1
+  let used = 0
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (used > 0 && used + 1 + word.length > width) {
+      rows += 1
+      used = 0
+    }
+    used += (used > 0 ? 1 : 0) + word.length
+    if (used > width) {
+      rows += Math.ceil(used / width) - 1
+      used = used % width || width
+    }
+  }
+
+  return rows
 }
 
 /** `line` cut to the `room` rows left under `columns`, so the next paragraph shows as far as there is
@@ -420,12 +442,12 @@ function renderedRows(line: string, columns: number): number {
 function fit(line: string, room: number, columns: number): string | undefined {
   const text = line.trim()
   if (room < 1 || text.startsWith('|') || /^#{1,6}\s/.test(text)) return undefined
-  const chars = room * Math.max(10, columns - 2) - 4
-  if (line.length <= chars) return line
-  const head = line.slice(0, chars)
-  const space = head.lastIndexOf(' ')
+  const indent = line.slice(0, line.length - line.trimStart().length)
+  const words = text.split(/\s+/)
+  let k = words.length
+  while (k > 0 && wrapRows(words.slice(0, k).join(' '), Math.max(10, columns - 1)) > room) k--
 
-  return (space > chars / 2 ? head.slice(0, space) : head).trimEnd()
+  return k > 0 ? indent + words.slice(0, k).join(' ') : undefined
 }
 
 /** The header and rule of the table that line `i` is inside, when `i` is neither of them: what a window starting there is missing. */

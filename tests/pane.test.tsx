@@ -508,6 +508,22 @@ describe('the bottom of the page', () => {
   })
 })
 
+describe('filling the page', () => {
+  test('one-row paragraphs fill every row the page has, no blank rows are left above the status line', SLOW, async ($, on) => {
+    // 36 cells wide in a 39 cell page: a row each, and a blank line between: 2 rows a paragraph.
+    const page = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0') + 'x'.repeat(34)).join('\n\n') + '\n'
+    fixture(on, { ...FILES, 'R.md': page })
+    await $.command.run(run('files', 'R.md'))
+    const ui = await $.ui.mount(pane('terminal', 40))
+    const text = String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
+    const paragraphs = text.split('\n').filter(l => l.length === 36).length
+    // The window is 28 rows: 14 paragraphs with their blank lines. A row counted too tall for each would leave nine.
+    expect(paragraphs).toBeGreaterThanOrEqual(13)
+    expect(paragraphs).toBeLessThanOrEqual(14)
+    await ui.unmount()
+  })
+})
+
 describe('typing while scrolled', () => {
   test('a letter goes to the prompt, and the pane it reopens keeps the place in the file', SLOW, async ($, on) => {
     const fx = fixture(on)
