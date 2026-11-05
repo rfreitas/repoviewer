@@ -198,6 +198,20 @@ describe('file view', () => {
     await ui.unmount()
   })
 
+  test('a toggle in the status line lights up under the pointer, and goes out when it leaves', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    const ui = await $.ui.mount(pane('terminal', 70))
+    const lit = async () => (await ui.find({ in: 'nav', type: 'Text', text: /^raw$/ }))?.props.underline
+    expect(await lit()).toBeUndefined()
+    const x = (await footer(ui)).indexOf('raw') + 1
+    await ui.pointer({ in: 'nav', type: 'move', x, y: STATUS_ROW })
+    expect(await lit()).toBe(true)
+    await ui.pointer({ in: 'nav', type: 'move', x, y: 3 })
+    expect(await lit()).toBeUndefined()
+    await ui.unmount()
+  })
+
   test('the status line holds the file facts, and no rows above the file do', SLOW, async ($, on) => {
     fixture(on)
     await $.command.run(run('files', 'SPEC.md'))

@@ -27,6 +27,8 @@ export type FileState = {
   /** A save was refused because the file changed on disk: the next ctrl+s forces. */
   isConflict: boolean
   lineAt: number
+  /** The status line's toggle under the pointer (its op's name): drawn lit, as a Button is under the engine's hover. */
+  hover?: string
   /** The `props.scroll` already applied. */
   scrollSeen: number
   // Extras (optional, so nav.tsx need not know them):
@@ -489,7 +491,7 @@ function markdownBlocks(f: NavFile, top: number, body: number, columns: number):
 
 // --------------------------------------------------------------------------- status line
 
-type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; op?: NavOp }
+type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; underline?: boolean; op?: NavOp }
 
 /** A footer hint; with an `op`, a click on it posts that. */
 type Hint = { t: string; op?: NavOp }
@@ -560,7 +562,7 @@ function renderStatus(el: ClientElements, segs: Seg[]): RenderElement {
     <Text wrap="truncate-end">
       {' '}
       {segs.map(s => (
-        <Text {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})} {...(s.bold ? { bold: true } : {})}>
+        <Text {...(s.color ? { color: s.color } : {})} {...(s.dim ? { dimColor: true } : {})} {...(s.bold ? { bold: true } : {})} {...(s.underline ? { underline: true } : {})}>
           {s.t}
         </Text>
       ))}
@@ -595,7 +597,7 @@ function viewSegs(s: FileState, props: NavProps, columns: number): Seg[] {
     if (f.kind !== 'missing') pos = formatSize(f.size)
   }
 
-  return pick(columns, hintCandidates([], hints, pos, tails))
+  return pick(columns, hintCandidates([], hints, pos, tails)).map(seg => (seg.op && seg.op.op === s.hover ? { ...seg, dim: false, underline: true } : seg))
 }
 
 function viewStatus(el: ClientElements, s: FileState, props: NavProps, columns: number): RenderElement {
@@ -1142,9 +1144,18 @@ function colAt(text: string, target: number): number {
   return text.length
 }
 
+/** The status line's toggle under a hovering pointer lights up. */
+function hovered(s: FileState, p: ClientPointerEvent, props: NavProps): FileState {
+  const isOver = (p.type === 'move' || p.type === 'enter') && !p.button && !s.buffer && Math.floor(p.y) === dims(props).body
+  const op = isOver ? segAt(viewSegs(s, props, props.columns), Math.floor(p.x))?.op?.op : undefined
+
+  return op === s.hover ? s : { ...s, hover: op }
+}
+
 export function filePointer(state: FileState, p: ClientPointerEvent, props: NavProps, post: (op: NavOp) => void): FileState {
   const s = settle(state, props)
-  if (p.type !== 'down' || p.button === 'right' || p.button === 'middle') return s
+  if (p.type !== 'down') return hovered(s, p, props)
+  if (p.button === 'right' || p.button === 'middle') return s
   const f = props.file
   const { body } = dims(props)
   if (p.y === body) {
