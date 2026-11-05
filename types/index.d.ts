@@ -43,6 +43,8 @@ export type RepoView = {
   /** The 1-based line the viewer should bring into view (show_file, follow), with its own bump. */
   line?: number
   lineAt: number
+  /** Where the Client's view of a file was when it handed the keys to the prompt, which reopens the pane: the new view starts there. */
+  resume?: NavResume
   /** Lines the wheel has scrolled the open file by, summed since the session began; the Client applies the change since it last looked. */
   scroll: number
   /** The last outcome the Client should show (saved, conflict, error). */
@@ -102,12 +104,16 @@ export type NavProps = {
   line?: number
   lineAt: number
   scroll: number
+  resume?: NavResume
   editing?: string
   notice?: { text: string; tone: 'info' | 'warn' | 'error'; at: number }
 }
 
 /** What the Client posts to the hooks module (`ui.message` e.data). One post per key press:
  * a later post in the same frame replaces an undelivered one. */
+/** A file view's position: the window's first line and the cursor line. */
+export type NavResume = { path: string; top: number; line: number }
+
 export type NavOp =
   | { op: 'cursor'; path: string }
   | { op: 'open'; path: string }
@@ -121,7 +127,7 @@ export type NavOp =
   | { op: 'edit'; path: string; isEditing: boolean }
   | { op: 'save'; path: string; text: string; baseMtimeMs: number; force: boolean }
   /** A character typed outside the editor: it goes to Claude Code's prompt, and the keys go back there. */
-  | { op: 'type'; text: string }
+  | { op: 'type'; text: string; resume?: NavResume }
   /** Hand the keys back to Claude Code's prompt (← at the tree's top level). */
   | { op: 'leave' }
 

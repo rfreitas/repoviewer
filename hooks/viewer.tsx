@@ -45,8 +45,8 @@ const BACK_WIDTH = 6
 /** Cells the engine's close mark covers at the right edge, plus a gap and our `close` label. */
 const CLOSE_RESERVE = 2 + 5 + 1
 
-/** Rows the hooks-drawn chrome takes above the Client: the file's title row. Its facts and toggles are in the Client's status line. */
-export const FILE_CHROME_ROWS = 1
+/** Rows the hooks-drawn chrome takes above the Client: none, the Client draws the file's title row itself while the view is at the top. */
+export const FILE_CHROME_ROWS = 0
 
 const LANGUAGES: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
@@ -84,7 +84,7 @@ function formatSize(bytes: number): string {
 }
 
 /** `abcdefgh` to `abc…fgh` within max characters. */
-function middle(s: string, max: number): string {
+export function middle(s: string, max: number): string {
   if (max <= 0) return ''
   if (s.length <= max) return s
   if (max === 1) return '…'
@@ -122,7 +122,7 @@ function countDiff(hunks: string): { add: number; del: number } {
   return { add, del }
 }
 
-function markStyle(mark: GitMark): { color: string; dimColor?: boolean; bold?: boolean } {
+export function markStyle(mark: GitMark): { color: string; dimColor?: boolean; bold?: boolean } {
   switch (mark) {
     case 'M':
       return { color: 'yellow' }
@@ -285,14 +285,7 @@ export function Viewer(el: ElementTable, ctx: ViewerCtx): RenderElement {
     footer = `lines ${first}–${last} of ${doc.lineCount}`
   }
 
-  if (ctx.body) {
-    return (
-      <Box flexDirection="column">
-        {header}
-        {ctx.body}
-      </Box>
-    )
-  }
+  if (ctx.body) return ctx.body
 
   return (
     <Box flexDirection="column">

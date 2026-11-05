@@ -27,8 +27,8 @@ type Finder = { find: (q: { in?: string; type?: string; text?: RegExp }) => Prom
 const drawn = async (ui: Finder) => (await ui.find({ in: 'nav', type: 'Box' }))?.text ?? ''
 const codeIn = async (ui: Finder) => (await ui.find({ in: 'nav', type: 'Code' }))?.props
 
-/** The row of the Client's status line: the pane's 30 rows, less the title row, less one (rows count from 0). */
-const STATUS_ROW = 28
+/** The row of the Client's status line: the last of the pane's 30 rows (rows count from 0). */
+const STATUS_ROW = 29
 type Clicker = Finder & { pointer: (e: { in: string; type: 'down'; x: number; y: number; button: 'left' }) => Promise<void> }
 /** What the status line says. */
 const footer = async (ui: Finder) => String((await ui.find({ in: 'nav', type: 'Text', text: /← (back|file)/ }))?.text)
@@ -212,6 +212,35 @@ describe('file view', () => {
     await ui.unmount()
   })
 
+  test('the title row is up at the top of a file and gives its row to the content once it scrolls', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    const ui = await $.ui.mount(pane('terminal', 70))
+    const title = () => ui.find({ in: 'nav', type: 'Text', text: /^SPEC\.md$/ })
+    expect(await title()).toBeDefined()
+    await ui.key({ key: 'down', in: 'nav' })
+    expect(await title()).toBeUndefined()
+    await ui.key({ key: 'home', in: 'nav' })
+    expect(await title()).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('back and edit in the status line are buttons: they light up and they act', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    const ui = await $.ui.mount(pane('terminal', 70))
+    const lit = async (label: string) => (await ui.find({ in: 'nav', type: 'Text', text: new RegExp('^' + label + '$') }))?.props.underline
+    const at = async (label: string) => (await footer(ui)).indexOf(label) + 1
+    for (const label of ['← back', '→ edit']) {
+      expect(await lit(label)).toBeUndefined()
+      await ui.pointer({ in: 'nav', type: 'move', x: await at(label), y: STATUS_ROW })
+      expect(await lit(label)).toBe(true)
+    }
+    await clickFooter(ui, '→ edit')
+    expect(await drawn(ui)).toContain('EDIT')
+    await ui.unmount()
+  })
+
   test('the status line holds the file facts, and no rows above the file do', SLOW, async ($, on) => {
     fixture(on)
     await $.command.run(run('files', 'SPEC.md'))
@@ -347,6 +376,26 @@ describe('tables in the pane', () => {
     expect(text).toContain('Kind')
     expect(text).toContain('fork')
     await ui.unmount()
+  })
+})
+
+describe('typing while scrolled', () => {
+  test('a letter goes to the prompt, and the pane it reopens keeps the place in the file', SLOW, async ($, on) => {
+    const fx = fixture(on)
+    await $.command.run(run('files', 'hooks/register.tsx'))
+    const ui = await $.ui.mount(pane('terminal'))
+    await ui.key({ key: 'pagedown', in: 'nav' })
+    await ui.key({ key: 'pagedown', in: 'nav' })
+    const first = (props?: Record<string, unknown>) => String(props?.source).split('\n')[0]
+    const before = first(await codeIn(ui))
+    expect(before).not.toContain('line0 ')
+    await ui.key({ key: 's', in: 'nav' })
+    expect(fx.seen.filled).toEqual(['s'])
+    // Handing over the keys closed and reopened the pane: a new view, drawn from the same props.
+    await ui.unmount()
+    const again = await $.ui.mount(pane('terminal'))
+    expect(first(await codeIn(again))).toBe(before)
+    await again.unmount()
   })
 })
 

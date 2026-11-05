@@ -9,6 +9,7 @@
 import type { ClientElements, ClientKeyEvent, ClientPointerEvent, RenderElement } from 'claude-code'
 
 import type { NavFile, NavOp, NavProps } from '../types'
+import { markStyle, middle } from './viewer'
 import { applyKey, displayCol, fromText, scrollIntoView, toText, view } from './editor'
 import type { Buffer } from './editor'
 import { layoutTable, parseTable } from './table'
@@ -27,7 +28,7 @@ export type FileState = {
   /** A save was refused because the file changed on disk: the next ctrl+s forces. */
   isConflict: boolean
   lineAt: number
-  /** The status line's toggle under the pointer (its op's name): drawn lit, as a Button is under the engine's hover. */
+  /** The status-line button under the pointer (its label): drawn lit, as a Button is under the engine's hover. */
   hover?: string
   /** The `props.scroll` already applied. */
   scrollSeen: number
@@ -247,6 +248,9 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
   if (props.line !== undefined) {
     line = props.line
     top = line - Math.floor(Math.max(1, body) / 3)
+  } else if (props.resume?.path === f.path) {
+    // The pane was closed and reopened to hand the keys to the prompt: pick up where the view was.
+    ;({ top, line } = props.resume)
   }
 
   return clampView(
@@ -269,7 +273,7 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
 
 /** The state as fileKey would see it for these props (file switched, page turned, external change applied). nav.tsx may call it to persist what render derived. */
 export function syncFile(state: FileState, props: NavProps): FileState {
-  return settle(state, props)
+  return settle(state, below(state, props))
 }
 
 // --------------------------------------------------------------------------- diff
@@ -491,12 +495,15 @@ function markdownBlocks(f: NavFile, top: number, body: number, columns: number):
 
 // --------------------------------------------------------------------------- status line
 
-type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; underline?: boolean; op?: NavOp }
+/** What a click on a status-line item does: post an op to the hooks, or (edit) start editing here. */
+type Act = NavOp | 'edit'
 
-/** A footer hint; with an `op`, a click on it posts that. */
-type Hint = { t: string; op?: NavOp }
+type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; underline?: boolean; act?: Act }
 
-const hint = (t: string, op?: NavOp): Hint => ({ t, ...(op ? { op } : {}) })
+/** A footer hint; with an `act`, it is a button. */
+type Hint = { t: string; act?: Act }
+
+const hint = (t: string, act?: Act): Hint => ({ t, ...(act ? { act } : {}) })
 
 const width = (segs: Seg[]): number => segs.reduce((n, s) => n + s.t.length, 0)
 
@@ -544,7 +551,7 @@ function hintCandidates(head: Seg[], hints: Hint[], pos: string, tails: Seg[][])
       if (k > 0 && segs.length > 0) segs.push({ t: ' ', dim: true })
       hints.slice(0, k).forEach((h, j) => {
         if (j > 0) segs.push({ t: '  ', dim: true })
-        segs.push({ t: h.t, dim: true, ...(h.op ? { op: h.op } : {}) })
+        segs.push({ t: h.t, dim: true, ...(h.act ? { act: h.act } : {}) })
       })
       if (pos !== '') segs.push({ t: (segs.length > 0 ? ' · ' : '') + pos, dim: true })
       segs.push(...tail)
@@ -586,7 +593,7 @@ function viewSegs(s: FileState, props: NavProps, columns: number): Seg[] {
     if (f.diff?.isTruncated) tails.unshift([{ t: ' · diff truncated', dim: true }])
   } else if (isTextual(f)) {
     hints = [hint('← back', { op: 'back' })]
-    if (f.isEditable) hints.push(hint('→ edit'))
+    if (f.isEditable) hints.push(hint('→ edit', 'edit'))
     hints.push(hint('↑↓ move'))
     if (f.kind === 'markdown') hints.push(hint(f.isRaw ? 'rendered' : 'raw', { op: 'raw' }))
     if (f.mark !== undefined && f.mark !== '?') hints.push(hint('diff', { op: 'diff' }))
@@ -597,7 +604,7 @@ function viewSegs(s: FileState, props: NavProps, columns: number): Seg[] {
     if (f.kind !== 'missing') pos = formatSize(f.size)
   }
 
-  return pick(columns, hintCandidates([], hints, pos, tails)).map(seg => (seg.op && seg.op.op === s.hover ? { ...seg, dim: false, underline: true } : seg))
+  return pick(columns, hintCandidates([], hints, pos, tails)).map(seg => (seg.act && seg.t === s.hover ? { ...seg, dim: false, underline: true } : seg))
 }
 
 function viewStatus(el: ClientElements, s: FileState, props: NavProps, columns: number): RenderElement {
@@ -890,9 +897,54 @@ function editBody(el: ClientElements, s: FileState, props: NavProps): RenderElem
   )
 }
 
-export function fileRender(el: ClientElements, state: FileState, props: NavProps): RenderElement {
+/** Whether the file's title row is up: while the view is at the top of what it shows, and always for what does not scroll. It goes when the view scrolls, and its row goes to the content. */
+function hasTitle(s: FileState, f: NavFile | undefined): boolean {
+  if (!f) return false
+  if (s.buffer) return s.buffer.top === 0
+  if (hasDiffView(f)) return s.hunk === 0 && (s.diffTop ?? 0) === 0
+  if (isTextual(f)) return s.top <= extent(f).start
+
+  return true
+}
+
+/** The props the view works to: a row shorter while the title row is up, so every window, key and click below it counts from the view's own rows. */
+function below(s: FileState, props: NavProps): NavProps {
+  return hasTitle(s, props.file) ? { ...props, rows: Math.max(3, props.rows - 1) } : props
+}
+
+function titleRow(el: ClientElements, f: NavFile, columns: number): RenderElement {
+  const { Box, Text } = el
+  const tail = (f.mark ? 2 : 0) + (f.isTouched ? 2 : 0)
+
+  return (
+    <Box flexDirection="row" gap={1} paddingLeft={1}>
+      <Text bold wrap="truncate-end">
+        {middle(f.path, Math.max(6, columns - 2 - tail))}
+      </Text>
+      {f.mark ? <Text {...markStyle(f.mark)}>{f.mark}</Text> : null}
+      {f.isTouched ? <Text color="magenta">●</Text> : null}
+    </Box>
+  )
+}
+
+export function fileRender(el: ClientElements, state: FileState, outer: NavProps): RenderElement {
   const { Box } = el
-  const s = settle(state, props)
+  const s = settle(state, below(state, outer))
+  const props = below(s, outer)
+  const frame = fileFrame(el, s, props)
+  const f = outer.file
+  if (props === outer || !f) return frame
+
+  return (
+    <Box flexDirection="column" width={outer.columns} height={outer.rows} flexShrink={0} overflow="hidden">
+      {titleRow(el, f, outer.columns)}
+      {frame}
+    </Box>
+  )
+}
+
+function fileFrame(el: ClientElements, s: FileState, props: NavProps): RenderElement {
+  const { Box } = el
   const f = props.file
   const { columns, rows, body } = dims(props)
   let content: RenderElement
@@ -1049,7 +1101,7 @@ function diffKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, p
 function viewKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, post: (op: NavOp) => void): FileState {
   // No letter commands in view mode: typing goes to Claude Code's prompt.
   if (isPrintable(k)) {
-    post({ op: 'type', text: k.key })
+    post({ op: 'type', text: k.key, resume: { path: f.path, top: s.top, line: s.line } })
 
     return s
   }
@@ -1120,7 +1172,8 @@ function viewKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, p
   return s
 }
 
-export function fileKey(state: FileState, k: ClientKeyEvent, props: NavProps, post: (op: NavOp) => void): FileState {
+export function fileKey(state: FileState, k: ClientKeyEvent, outer: NavProps, post: (op: NavOp) => void): FileState {
+  const props = below(state, outer)
   const s = settle(state, props)
   if (s.buffer) return editKey(s, k, props, post)
   const f = props.file
@@ -1147,12 +1200,16 @@ function colAt(text: string, target: number): number {
 /** The status line's toggle under a hovering pointer lights up. */
 function hovered(s: FileState, p: ClientPointerEvent, props: NavProps): FileState {
   const isOver = (p.type === 'move' || p.type === 'enter') && !p.button && !s.buffer && Math.floor(p.y) === dims(props).body
-  const op = isOver ? segAt(viewSegs(s, props, props.columns), Math.floor(p.x))?.op?.op : undefined
+  const seg = isOver ? segAt(viewSegs(s, props, props.columns), Math.floor(p.x)) : undefined
+  const label = seg?.act ? seg.t : undefined
 
-  return op === s.hover ? s : { ...s, hover: op }
+  return label === s.hover ? s : { ...s, hover: label }
 }
 
-export function filePointer(state: FileState, p: ClientPointerEvent, props: NavProps, post: (op: NavOp) => void): FileState {
+export function filePointer(state: FileState, pointer: ClientPointerEvent, outer: NavProps, post: (op: NavOp) => void): FileState {
+  const props = below(state, outer)
+  // The title row, when up, is the region's first row: the view's own rows start under it.
+  const p = props === outer ? pointer : { ...pointer, y: pointer.y - 1 }
   const s = settle(state, props)
   if (p.type !== 'down') return hovered(s, p, props)
   if (p.button === 'right' || p.button === 'middle') return s
@@ -1161,11 +1218,12 @@ export function filePointer(state: FileState, p: ClientPointerEvent, props: NavP
   if (p.y === body) {
     // The status line: back, and the toggles it offers.
     if (s.buffer || !f) return s
-    const op = segAt(viewSegs(s, props, props.columns), Math.floor(p.x))?.op
-    if (!op) return s
-    post(op)
+    const act = segAt(viewSegs(s, props, props.columns), Math.floor(p.x))?.act
+    if (!act) return s
+    if (act === 'edit') return enterEdit(s, props, f, post)
+    post(act)
 
-    return op.op === 'diff' ? { ...s, hunk: 0, diffTop: 0 } : s
+    return act.op === 'diff' ? { ...s, hunk: 0, diffTop: 0 } : s
   }
   if (p.y < 0 || p.y >= body) return s
   if (s.buffer) {

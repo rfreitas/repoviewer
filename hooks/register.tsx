@@ -336,6 +336,8 @@ async function handleOp($: Engine, op: NavOp) {
     case 'type':
       // Typing outside the editor is meant for Claude: put it in the prompt and give the prompt the keys.
       await $.prompt.fill({ text: op.text, mode: 'insert' })
+      // Handing over the keys reopens the pane, and the new view of the file starts where this one was.
+      await setView($, v => ({ ...v, resume: op.resume }))
       return leavePane($)
     case 'leave':
       return leavePane($)
@@ -582,6 +584,7 @@ export const register: Register = on => {
       line: current.line,
       lineAt: current.lineAt,
       scroll: current.scroll,
+      resume: current.resume,
       editing: current.editing,
       notice: current.notice,
     }
