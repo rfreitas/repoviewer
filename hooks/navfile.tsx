@@ -426,6 +426,16 @@ function stackTable(block: string[], columns: number): string[] | undefined {
   return out
 }
 
+/** The header and rule of the table that line `i` is inside, when `i` is neither of them: what a window starting there is missing. */
+function tableHead(lines: string[], i: number): string[] {
+  const isRow = (n: number): boolean => lines[n]?.trim().startsWith('|') === true
+  if (i === 0 || !isRow(i - 1)) return []
+  let start = i
+  while (start > 0 && isRow(start - 1)) start--
+
+  return [start, start + 1].filter(n => n < i).map(n => lines[n]!)
+}
+
 function markdownSource(f: NavFile, top: number, body: number, columns: number): string {
   const { start, lines } = extent(f)
   const idx = clamp(top - start, 0, Math.max(0, lines.length - 1))
@@ -455,7 +465,15 @@ function markdownSource(f: NavFile, top: number, body: number, columns: number):
     if (isRow && !inTable) {
       let end = i
       while (end + 1 < lines.length && lines[end + 1]!.trim().startsWith('|')) end++
-      const stacked = stackTable(lines.slice(i, end + 1).map(row => slice(clean(row), 2000)), columns)
+      // A window that starts inside a table borrows its header and rule: rows without them draw as bare pipes.
+      const lead = i === idx ? tableHead(lines, i).map(row => slice(clean(row), 2000)) : []
+      const stacked = stackTable([...lead, ...lines.slice(i, end + 1).map(row => slice(clean(row), 2000))], columns)
+      if (!stacked && lead.length > 0) {
+        out.push(...lead)
+        chars += lead.reduce((n, s) => n + s.length + 1, 0)
+        rows += lead.length * 2
+        inTable = true
+      }
       if (stacked) {
         const cost = stacked.reduce((n, s) => n + renderedRows(s, columns), 0)
         const size = stacked.reduce((n, s) => n + s.length + 1, 0)

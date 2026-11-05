@@ -245,6 +245,18 @@ describe('a table wider than the pane', () => {
   const SMALL = ['| a | b |', '| - | - |', '| 1 | 2 |', ''].join('\n')
   const markdown = async (ui: Finder) => String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
 
+  test('a window that starts inside the table keeps its header', SLOW, async ($, on) => {
+    fixture(on, { ...FILES, 'T.md': TABLE })
+    await $.command.run(run('files', 'T.md'))
+    const ui = await $.ui.mount(pane('terminal', 40))
+    // Down skips the blank line: header, rule, then the first row is the window's top.
+    for (let n = 0; n < 3; n++) await ui.key({ key: 'down', in: 'nav' })
+    const text = await markdown(ui)
+    expect(text).toContain('**fork**')
+    expect(text).not.toContain('| fork |')
+    await ui.unmount()
+  })
+
   test('is drawn as a list, which wraps; a table that fits stays a table', SLOW, async ($, on) => {
     fixture(on, { ...FILES, 'T.md': TABLE, 'S.md': SMALL })
     await $.command.run(run('files', 'T.md'))
