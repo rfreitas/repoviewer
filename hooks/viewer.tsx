@@ -45,8 +45,8 @@ const BACK_WIDTH = 6
 /** Cells the engine's close mark covers at the right edge, plus a gap and our `close` label. */
 const CLOSE_RESERVE = 2 + 5 + 1
 
-/** Rows the hooks-drawn chrome takes above the Client: header, breadcrumb, toolbar with the file's facts. */
-export const FILE_CHROME_ROWS = 3
+/** Rows the hooks-drawn chrome takes above the Client: the file's title row. Its facts and toggles are in the Client's status line. */
+export const FILE_CHROME_ROWS = 1
 
 const LANGUAGES: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
@@ -159,7 +159,8 @@ export function Viewer(el: ElementTable, ctx: ViewerCtx): RenderElement {
   // them and the two read as one `close ✕`). One cell in from the divider, as the tree's chrome is.
   const hasClose = columns >= 28
   const tail = (mark ? 2 : 0) + (ctx.isTouched ? 2 : 0)
-  const base = doc.path.slice(doc.path.lastIndexOf('/') + 1)
+  // With the Client there is no breadcrumb row, so the title carries the folders too.
+  const base = ctx.body ? doc.path : doc.path.slice(doc.path.lastIndexOf('/') + 1)
   const baseRoom = Math.max(6, columns - PAD - BACK_WIDTH - 1 - tail - (hasClose ? CLOSE_RESERVE : PAD))
   const header = (
     <Box flexDirection="row" justifyContent="space-between" paddingLeft={PAD} paddingRight={hasClose ? 2 : PAD}>
@@ -288,8 +289,6 @@ export function Viewer(el: ElementTable, ctx: ViewerCtx): RenderElement {
     return (
       <Box flexDirection="column">
         {header}
-        {breadcrumb}
-        {toolbar}
         {ctx.body}
       </Box>
     )

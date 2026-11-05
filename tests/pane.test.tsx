@@ -27,6 +27,18 @@ type Finder = { find: (q: { in?: string; type?: string; text?: RegExp }) => Prom
 const drawn = async (ui: Finder) => (await ui.find({ in: 'nav', type: 'Box' }))?.text ?? ''
 const codeIn = async (ui: Finder) => (await ui.find({ in: 'nav', type: 'Code' }))?.props
 
+/** The row of the Client's status line: the pane's 30 rows, less the title row, less one (rows count from 0). */
+const STATUS_ROW = 28
+type Clicker = Finder & { pointer: (e: { in: string; type: 'down'; x: number; y: number; button: 'left' }) => Promise<void> }
+/** What the status line says. */
+const footer = async (ui: Finder) => String((await ui.find({ in: 'nav', type: 'Text', text: /← (back|file)/ }))?.text)
+/** Clicks `label` in the status line, where the file's toggles are. */
+const clickFooter = async (ui: Clicker, label: string) => {
+  const x = (await footer(ui)).indexOf(label)
+  expect(x).toBeGreaterThan(-1)
+  await ui.pointer({ in: 'nav', type: 'down', x: x + 1, y: STATUS_ROW, button: 'left' })
+}
+
 describe('tree and arrows', () => {
   test('arrows walk into folders and files and back out', SLOW, async ($, on) => {
     fixture(on)
@@ -172,14 +184,29 @@ describe('tree and arrows', () => {
 })
 
 describe('file view', () => {
-  test('markdown renders, and the toolbar toggles it to source', SLOW, async ($, on) => {
+  test('markdown renders, and the status line toggles it to source and back', SLOW, async ($, on) => {
     fixture(on)
     await $.command.run(run('repo', 'SPEC.md'))
     const ui = await $.ui.mount(pane('terminal', 70))
     expect(await ui.find({ in: 'nav', type: 'Markdown' })).toBeDefined()
-    await ui.press({ key: 'raw' })
+    await clickFooter(ui, 'raw')
     expect(await ui.find({ in: 'nav', type: 'Markdown' })).toBeUndefined()
     expect(await codeIn(ui)).toBeDefined()
+    expect(await footer(ui)).toContain('rendered')
+    await clickFooter(ui, 'rendered')
+    expect(await ui.find({ in: 'nav', type: 'Markdown' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the status line holds the file facts, and no rows above the file do', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    const ui = await $.ui.mount(pane('terminal', 70))
+    // Position, then the size: no "lines", file type or breadcrumb row, and no reveal button.
+    expect(await footer(ui)).toMatch(/\d+\/\d+ · [\d.]+ (B|KB)/)
+    expect(await ui.find({ type: 'Text', text: /markdown|^fixture$|^repo$/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'reveal' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'raw' })).toBeUndefined()
     await ui.unmount()
   })
 
@@ -198,7 +225,7 @@ describe('file view', () => {
     fixture(on)
     await $.command.run(run('files', 'hooks/repo.ts'))
     const ui = await $.ui.mount(pane('terminal'))
-    await ui.press({ key: 'diff' })
+    await clickFooter(ui, 'diff')
     // Drawn row by row (Code's diff format leaves stray cells behind): old and new line, each padded to the width.
     const text = await drawn(ui)
     expect(text).toContain('@@ -1 +1 @@')

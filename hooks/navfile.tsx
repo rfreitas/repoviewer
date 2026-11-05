@@ -489,7 +489,12 @@ function markdownBlocks(f: NavFile, top: number, body: number, columns: number):
 
 // --------------------------------------------------------------------------- status line
 
-type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean }
+type Seg = { t: string; color?: string; dim?: boolean; bold?: boolean; op?: NavOp }
+
+/** A footer hint; with an `op`, a click on it posts that. */
+type Hint = { t: string; op?: NavOp }
+
+const hint = (t: string, op?: NavOp): Hint => ({ t, ...(op ? { op } : {}) })
 
 const width = (segs: Seg[]): number => segs.reduce((n, s) => n + s.t.length, 0)
 
@@ -529,12 +534,16 @@ function freshNotice(s: FileState, props: NavProps): Seg[] {
 }
 
 /** `head hints · pos tail`, tried with each tail and, for each, with fewer hints (dropped from the right). */
-function hintCandidates(head: Seg[], hints: string[], pos: string, tails: Seg[][]): Seg[][] {
+function hintCandidates(head: Seg[], hints: Hint[], pos: string, tails: Seg[][]): Seg[][] {
   const out: Seg[][] = []
   for (const tail of tails) {
     for (let k = hints.length; k >= 0; k--) {
       const segs: Seg[] = [...head]
-      if (k > 0) segs.push({ t: (segs.length > 0 ? ' ' : '') + hints.slice(0, k).join('  '), dim: true })
+      if (k > 0 && segs.length > 0) segs.push({ t: ' ', dim: true })
+      hints.slice(0, k).forEach((h, j) => {
+        if (j > 0) segs.push({ t: '  ', dim: true })
+        segs.push({ t: h.t, dim: true, ...(h.op ? { op: h.op } : {}) })
+      })
       if (pos !== '') segs.push({ t: (segs.length > 0 ? ' · ' : '') + pos, dim: true })
       segs.push(...tail)
       out.push(segs)
@@ -559,30 +568,49 @@ function renderStatus(el: ClientElements, segs: Seg[]): RenderElement {
   )
 }
 
-function viewStatus(el: ClientElements, s: FileState, props: NavProps, columns: number): RenderElement {
+/** The view status line as segments: back, what the file offers (edit, raw or rendered, diff), then where you are and the file's size. */
+function viewSegs(s: FileState, props: NavProps, columns: number): Seg[] {
   const f = props.file
   const notice = freshNotice(s, props)
   const tails: Seg[][] = notice.length > 0 ? [notice, []] : [[]]
-  let hints: string[]
+  let hints: Hint[]
   let pos = ''
   if (!f) {
-    hints = ['← back']
+    hints = [hint('← back', { op: 'back' })]
   } else if (hasDiffView(f)) {
     const hunks = parseHunks(f.diff?.hunks ?? '')
-    hints = ['← file', '↑↓ hunk', 'pgdn more']
+    hints = [hint('← file', { op: 'diff' }), hint('↑↓ hunk'), hint('pgdn more')]
     if (hunks.length > 0) pos = `hunk ${s.hunk + 1}/${hunks.length}`
     if (f.diff?.isTruncated) tails.unshift([{ t: ' · diff truncated', dim: true }])
   } else if (isTextual(f)) {
-    hints = ['← back']
-    if (f.isEditable) hints.push('→ edit')
-    hints.push('↑↓ move')
-    if (f.pageCount > 1) hints.push(`page ${f.page + 1}/${f.pageCount}`)
-    pos = `${isRendered(f) ? s.top : s.line}/${f.lineCount}`
+    hints = [hint('← back', { op: 'back' })]
+    if (f.isEditable) hints.push(hint('→ edit'))
+    hints.push(hint('↑↓ move'))
+    if (f.kind === 'markdown') hints.push(hint(f.isRaw ? 'rendered' : 'raw', { op: 'raw' }))
+    if (f.mark !== undefined && f.mark !== '?') hints.push(hint('diff', { op: 'diff' }))
+    if (f.pageCount > 1) hints.push(hint(`page ${f.page + 1}/${f.pageCount}`))
+    pos = `${isRendered(f) ? s.top : s.line}/${f.lineCount} · ${formatSize(f.size)}`
   } else {
-    hints = ['← back']
+    hints = [hint('← back', { op: 'back' })]
+    if (f.kind !== 'missing') pos = formatSize(f.size)
   }
 
-  return renderStatus(el, pick(columns, hintCandidates([], hints, pos, tails)))
+  return pick(columns, hintCandidates([], hints, pos, tails))
+}
+
+function viewStatus(el: ClientElements, s: FileState, props: NavProps, columns: number): RenderElement {
+  return renderStatus(el, viewSegs(s, props, columns))
+}
+
+/** The segment under column `x` of a status line (it starts with one space). */
+function segAt(segs: Seg[], x: number): Seg | undefined {
+  let at = 1
+  for (const seg of segs) {
+    if (x >= at && x < at + seg.t.length) return seg
+    at += seg.t.length
+  }
+
+  return undefined
 }
 
 function editStatus(el: ClientElements, s: FileState, props: NavProps, columns: number): RenderElement {
@@ -610,7 +638,7 @@ function editStatus(el: ClientElements, s: FileState, props: NavProps, columns: 
     const tails: Seg[][] = []
     if (notice.length > 0) tails.push([...mod, ...notice])
     tails.push(mod, [])
-    candidates = hintCandidates(head, ['ctrl+s save', 'ctrl+q done', 'ctrl+z undo'], pos, tails)
+    candidates = hintCandidates(head, [hint('ctrl+s save'), hint('ctrl+q done'), hint('ctrl+z undo')], pos, tails)
     candidates.push([...head, ...mod])
   }
 
@@ -1120,16 +1148,13 @@ export function filePointer(state: FileState, p: ClientPointerEvent, props: NavP
   const f = props.file
   const { body } = dims(props)
   if (p.y === body) {
-    // The status line: its first item is the way back.
-    if (s.buffer || !f || p.x >= 6) return s
-    if (hasDiffView(f)) {
-      post({ op: 'diff' })
+    // The status line: back, and the toggles it offers.
+    if (s.buffer || !f) return s
+    const op = segAt(viewSegs(s, props, props.columns), Math.floor(p.x))?.op
+    if (!op) return s
+    post(op)
 
-      return { ...s, hunk: 0, diffTop: 0 }
-    }
-    post({ op: 'back' })
-
-    return s
+    return op.op === 'diff' ? { ...s, hunk: 0, diffTop: 0 } : s
   }
   if (p.y < 0 || p.y >= body) return s
   if (s.buffer) {
