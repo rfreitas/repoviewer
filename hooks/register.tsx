@@ -19,7 +19,7 @@ import {
   treeRows,
 } from './repo'
 import { Tree, treeChromeRows } from './tree'
-import { FILE_CHROME_ROWS, Viewer } from './viewer'
+import { Viewer } from './viewer'
 
 const PANE = 'repoviewer'
 const TOOL = 'mcp__kesav__show_file'
@@ -32,10 +32,6 @@ const POLL_MS = 8000
 const NAV_MAX_TEXT = 90000
 /** Characters of tree rows handed to the Client (its props are bounded at 100,000). */
 const NAV_ROW_BUDGET = 60000
-/** Rows the hooks-drawn chrome takes above the Client: treeChromeRows (header, counts, finder, toolbar) and
- * FILE_CHROME_ROWS (viewer header, breadcrumb, toolbar), each drawn beside its own layout in tree.tsx and viewer.tsx. */
-const FILE_CHROME = FILE_CHROME_ROWS
-
 const DEFAULT_VIEW: RepoView = {
   mode: 'tree',
   expanded: [],
@@ -112,6 +108,9 @@ async function notify($: Engine, text: string, tone: 'info' | 'warn' | 'error') 
   const at = await $.clock.now().catch(() => 0)
   await setView($, v => ({ ...v, notice: { text, tone, at } }))
 }
+
+/** Whether the last draw of the pane used the keyboard Client: only then does the Client, not the engine, scroll the file. */
+let isClientDrawn = false
 
 // ---------------------------------------------------------------------------
 // Host I/O. The engine follows `$` only into functions of this file, so every
@@ -252,6 +251,7 @@ async function showFile($: Engine, path: string, line?: number) {
     page,
     showDiff: false,
     editing: v.editing === path ? v.editing : undefined,
+    resume: undefined,
     // A line only comes with show_file; a file opened any other way starts at its top.
     ...(line !== undefined ? { line, lineAt: v.lineAt + 1 } : { line: undefined }),
     expanded: [...new Set([...v.expanded, ...parentDirs(path)])],
@@ -337,7 +337,7 @@ async function handleOp($: Engine, op: NavOp) {
       // Typing outside the editor is meant for Claude: put it in the prompt and give the prompt the keys.
       await $.prompt.fill({ text: op.text, mode: 'insert' })
       // Handing over the keys reopens the pane, and the new view of the file starts where this one was.
-      await setView($, v => ({ ...v, resume: op.resume }))
+      await setView($, v => ({ ...v, resume: op.resume, line: undefined }))
       return leavePane($)
     case 'leave':
       return leavePane($)
@@ -480,7 +480,7 @@ export const register: Register = on => {
   // scroll is handed down as a running total, rows as the engine counts them (a tick is one at
   // rest, more as ticks crowd), as in the transcript. A tree stays the engine's.
   on('ui.scroll', { requestId: PANE }, async ($, e, next) => {
-    if ((await read($, view)).mode !== 'file') return next(e)
+    if (!isClientDrawn || (await read($, view)).mode !== 'file') return next(e)
     await setView($, v => ({ ...v, scroll: v.scroll + e.by }))
     return {}
   })
@@ -539,6 +539,7 @@ export const register: Register = on => {
         cursor: path,
         cursorAt: v.cursorAt + 1,
         page: v.openPath === path ? v.page : 0,
+        resume: undefined,
         expanded: [...new Set([...v.expanded, ...parentDirs(path)])],
       }))
     }
@@ -574,6 +575,7 @@ export const register: Register = on => {
 
     // The keyboard Client: terminal and desktop draw one; the editor's surfaces fall back to buttons.
     const hasClient = (e.surface === 'terminal' || e.surface === 'desktop') && 'Client' in el
+    isClientDrawn = hasClient
     const nav = (props: NavProps, height: number) =>
       'Client' in el ? <el.Client key="nav" module="./nav.tsx" props={plain(props)} height={height} /> : undefined
     const navBase = {
@@ -622,7 +624,7 @@ export const register: Register = on => {
           mark: marks[path],
           isTouched: (edits[path] ?? 0) > 0,
         }
-        body = nav({ ...navBase, mode: 'file', rows: Math.max(4, rows - FILE_CHROME), file }, Math.max(4, rows - FILE_CHROME))
+        body = nav({ ...navBase, mode: 'file', rows: Math.max(4, rows), file }, Math.max(4, rows))
       }
       return Viewer(el, {
         surface: e.surface,

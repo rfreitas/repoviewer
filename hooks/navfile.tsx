@@ -3,9 +3,9 @@
 // view and the in-pane text editor UI.
 //
 // Everything here is pure: `fileKey`, `filePointer` and `initFile` return new FileState
-// objects (nav.tsx keeps them in surface state) and `fileRender` only reads. The hooks side
-// draws the header and toolbar above the Client, so this draws props.rows rows of at most
-// props.columns cells: a body (rows - 1 lines) and one dim status line.
+// objects (nav.tsx keeps them in surface state) and `fileRender` only reads. This draws
+// props.rows rows of at most props.columns cells: the file's title row while the view is at
+// the top, a body, and one dim status line.
 import type { ClientElements, ClientKeyEvent, ClientPointerEvent, RenderElement } from 'claude-code'
 
 import type { NavFile, NavOp, NavProps } from '../types'
@@ -206,6 +206,8 @@ function sync(s: FileState, props: NavProps): FileState {
   if (f.path !== s.path) return s
   let n = s
   if (n.buffer) {
+    // The wheel does not move the editor: its ticks are dropped, not kept to move the view when the editor closes.
+    n = { ...n, scrollSeen: props.scroll }
     if (props.lineAt !== n.lineAt) n = { ...n, lineAt: props.lineAt }
     n = reconcileBuffer(n, f, props)
   } else {
@@ -247,7 +249,7 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
   const f = props.file
   if (!f) return blank(props)
   if (previous && previous.path === f.path) {
-    return clampView(sync({ ...previous, mtimeMs: previous.buffer ? previous.mtimeMs : f.mtimeMs }, props), props)
+    return settled({ ...previous, mtimeMs: previous.buffer ? previous.mtimeMs : f.mtimeMs }, props).s
   }
   const { body } = dims(props)
   const start = Math.max(1, Math.floor(f.startLine) || 1)
@@ -284,7 +286,7 @@ export function initFile(props: NavProps, previous?: FileState): FileState {
 
 /** The state as fileKey would see it for these props (file switched, page turned, external change applied). nav.tsx may call it to persist what render derived. */
 export function syncFile(state: FileState, props: NavProps): FileState {
-  return settle(state, below(state, props))
+  return settled(state, props).s
 }
 
 // --------------------------------------------------------------------------- diff
@@ -422,7 +424,6 @@ function continues(prev: string, line: string): boolean {
 function renderedRows(line: string, columns: number): number {
   const text = line.trim()
   if (text === '') return 1
-  if (text.startsWith('|')) return 2
   const wrapped = wrapRows(text, Math.max(10, columns - 1))
 
   return /^#{1,6}\s/.test(text) ? wrapped + 1 : wrapped
@@ -440,12 +441,13 @@ function wrapStarts(words: string[], width: number): { starts: number[]; rows: n
   let row = 0
   let used = 0
   for (const word of words) {
-    if (used > 0 && used + 1 + word.length > width) {
+    const cells = displayCol(word, word.length)
+    if (used > 0 && used + 1 + cells > width) {
       row += 1
       used = 0
     }
     starts.push(row)
-    used += (used > 0 ? 1 : 0) + word.length
+    used += (used > 0 ? 1 : 0) + cells
     if (used > width) {
       row += Math.ceil(used / width) - 1
       used = used % width || width
@@ -598,10 +600,14 @@ function markdownBlocks(f: NavFile, top: number, skip: number, body: number, col
       continue
     }
     const cost = renderedRows(l, columns)
-    if (rows + cost > body && (blocks.length > 0 || out.length > 0)) {
+    if (rows + cost > body) {
       const part = fit(l, body - rows, columns)
-      if (part) out.push(part)
-      break
+      if (part) {
+        out.push(part)
+        break
+      }
+      // A heading or a table row taller than the page still draws, cut, when it is the first thing on it.
+      if (blocks.length > 0 || out.length > 0) break
     }
     if (chars + l.length + 1 > BUDGET && out.length > 0) break
     out.push(l)
@@ -1029,7 +1035,7 @@ function hasTitle(s: FileState, f: NavFile | undefined): boolean {
 
 /** The props the view works to: a row shorter while the title row is up, so every window, key and click below it counts from the view's own rows. */
 function below(s: FileState, props: NavProps): NavProps {
-  return hasTitle(s, props.file) ? { ...props, rows: Math.max(3, props.rows - 1) } : props
+  return hasTitle(s, props.file) ? { ...props, rows: props.rows - 1 } : props
 }
 
 function titleRow(el: ClientElements, f: NavFile, columns: number): RenderElement {
@@ -1047,13 +1053,26 @@ function titleRow(el: ClientElements, f: NavFile, columns: number): RenderElemen
   )
 }
 
+/** The state settled to the props it is drawn with. Whether the title row is up changes the rows, which can move the
+ * window, which can change whether it is up: settle again once, so a state adopted from props is one the next draw leaves alone. */
+function settled(state: FileState, outer: NavProps): { s: FileState; props: NavProps } {
+  let props = below(state, outer)
+  let s = settle(state, props)
+  const next = below(s, outer)
+  if (next.rows !== props.rows) {
+    props = next
+    s = settle(s, props)
+  }
+
+  return { s, props }
+}
+
 export function fileRender(el: ClientElements, state: FileState, outer: NavProps): RenderElement {
   const { Box } = el
-  const s = settle(state, below(state, outer))
-  const props = below(s, outer)
+  const { s, props } = settled(state, outer)
   const frame = fileFrame(el, s, props)
   const f = outer.file
-  if (props === outer || !f) return frame
+  if (props.rows === outer.rows || !f) return frame
 
   return (
     <Box flexDirection="column" width={outer.columns} height={outer.rows} flexShrink={0} overflow="hidden">
@@ -1281,8 +1300,7 @@ function viewKey(s: FileState, k: ClientKeyEvent, props: NavProps, f: NavFile, p
 }
 
 export function fileKey(state: FileState, k: ClientKeyEvent, outer: NavProps, post: (op: NavOp) => void): FileState {
-  const props = below(state, outer)
-  const s = settle(state, props)
+  const { s, props } = settled(state, outer)
   if (s.buffer) return editKey(s, k, props, post)
   const f = props.file
   if (!f) return s
@@ -1308,17 +1326,16 @@ function colAt(text: string, target: number): number {
 /** The status line's toggle under a hovering pointer lights up. */
 function hovered(s: FileState, p: ClientPointerEvent, props: NavProps): FileState {
   const isOver = (p.type === 'move' || p.type === 'enter') && !p.button && !s.buffer && Math.floor(p.y) === dims(props).body
-  const seg = isOver ? segAt(viewSegs(s, props, props.columns), Math.floor(p.x)) : undefined
+  const seg = isOver ? segAt(viewSegs(s, props, props.columns - 1), Math.floor(p.x)) : undefined
   const label = seg?.act ? seg.t : undefined
 
   return label === s.hover ? s : { ...s, hover: label }
 }
 
 export function filePointer(state: FileState, pointer: ClientPointerEvent, outer: NavProps, post: (op: NavOp) => void): FileState {
-  const props = below(state, outer)
+  const { s, props } = settled(state, outer)
   // The title row, when up, is the region's first row: the view's own rows start under it.
-  const p = props === outer ? pointer : { ...pointer, y: pointer.y - 1 }
-  const s = settle(state, props)
+  const p = props.rows === outer.rows ? pointer : { ...pointer, y: pointer.y - 1 }
   if (p.type !== 'down') return hovered(s, p, props)
   if (p.button === 'right' || p.button === 'middle') return s
   const f = props.file
@@ -1326,7 +1343,7 @@ export function filePointer(state: FileState, pointer: ClientPointerEvent, outer
   if (p.y === body) {
     // The status line: back, and the toggles it offers.
     if (s.buffer || !f) return s
-    const act = segAt(viewSegs(s, props, props.columns), Math.floor(p.x))?.act
+    const act = segAt(viewSegs(s, props, props.columns - 1), Math.floor(p.x))?.act
     if (!act) return s
     if (act === 'edit') return enterEdit(s, props, f, post)
     post(act)

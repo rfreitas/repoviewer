@@ -28,11 +28,11 @@ const relOf = (path: string) => {
 }
 
 /** What the plugin did beneath it, for the tests to check. */
-export type Seen = { hidden: boolean; open: Set<string>; closes: number; filled: string[]; written: Record<string, string>; stored: Record<string, unknown> }
+export type Seen = { scrolls: number; toasts: string[]; hidden: boolean; open: Set<string>; closes: number; filled: string[]; written: Record<string, string>; stored: Record<string, unknown> }
 
 export function fixture(on: On, files: Record<string, string> = { ...FILES }) {
   const open = new Set<string>()
-  const seen: Seen = { hidden: false, open, closes: 0, filled: [], written: {}, stored: {} }
+  const seen: Seen = { scrolls: 0, toasts: [], hidden: false, open, closes: 0, filled: [], written: {}, stored: {} }
   const mtimes: Record<string, number> = {}
   const isDir = (rel: string) => rel === ROOT || Object.keys(files).some(file => file.startsWith(`${rel}/`))
 
@@ -49,8 +49,14 @@ export function fixture(on: On, files: Record<string, string> = { ...FILES }) {
     seen.closes += 1
     return value(undefined)
   })
-  on('ui.scroll', () => ({}))
-  on('ui.toast', () => value(undefined))
+  on('ui.scroll', () => {
+    seen.scrolls += 1
+    return {}
+  })
+  on('ui.toast', (_$, e) => {
+    seen.toasts.push(String(e.text))
+    return value(undefined)
+  })
   on('store.get', (_$, e) => value(seen.stored[e.key]))
   on('store.set', (_$, e) => {
     seen.stored[e.key] = e.value

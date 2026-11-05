@@ -45,9 +45,6 @@ const BACK_WIDTH = 6
 /** Cells the engine's close mark covers at the right edge, plus a gap and our `close` label. */
 const CLOSE_RESERVE = 2 + 5 + 1
 
-/** Rows the hooks-drawn chrome takes above the Client: none, the Client draws the file's title row itself while the view is at the top. */
-export const FILE_CHROME_ROWS = 0
-
 const LANGUAGES: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
   js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
@@ -141,6 +138,8 @@ export function markStyle(mark: GitMark): { color: string; dimColor?: boolean; b
 
 export function Viewer(el: ElementTable, ctx: ViewerCtx): RenderElement {
   const { Box, Text, Button, Code, Markdown } = el
+  // The Client draws the file's title row, its status line and the page itself.
+  if (ctx.body) return ctx.body
   const { doc, view, mark, actions } = ctx
   const columns = Math.max(20, Math.floor(ctx.columns) || 20)
   const pageCount = ctx.page?.pageCount ?? 1
@@ -159,8 +158,7 @@ export function Viewer(el: ElementTable, ctx: ViewerCtx): RenderElement {
   // them and the two read as one `close ✕`). One cell in from the divider, as the tree's chrome is.
   const hasClose = columns >= 28
   const tail = (mark ? 2 : 0) + (ctx.isTouched ? 2 : 0)
-  // With the Client there is no breadcrumb row, so the title carries the folders too.
-  const base = ctx.body ? doc.path : doc.path.slice(doc.path.lastIndexOf('/') + 1)
+  const base = doc.path.slice(doc.path.lastIndexOf('/') + 1)
   const baseRoom = Math.max(6, columns - PAD - BACK_WIDTH - 1 - tail - (hasClose ? CLOSE_RESERVE : PAD))
   const header = (
     <Box flexDirection="row" justifyContent="space-between" paddingLeft={PAD} paddingRight={hasClose ? 2 : PAD}>
@@ -284,8 +282,6 @@ export function Viewer(el: ElementTable, ctx: ViewerCtx): RenderElement {
     const last = first + Math.max(1, countLines(ctx.page.text)) - 1
     footer = `lines ${first}–${last} of ${doc.lineCount}`
   }
-
-  if (ctx.body) return ctx.body
 
   return (
     <Box flexDirection="column">

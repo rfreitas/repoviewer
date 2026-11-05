@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { NavProps } from '../types'
+import { fromText } from '../hooks/editor'
 import { fileKey, initFile, syncFile } from '../hooks/navfile'
+import { layoutTable } from '../hooks/table'
 
 const TEXT = Array.from({ length: 300 }, (_, i) => `const line${i} = ${i}`).join('\n') + '\n'
 
@@ -81,5 +83,31 @@ describe('scrolling rendered markdown by rows', () => {
     // A 20 row region less its title row and status line: 16 rows of 6-row paragraphs, two whole ones and four rows of
     // the third. By source lines it would have gone 16 lines on, to the last paragraph.
     expect(after).toMatchObject({ top: 5, rowSkip: 4 })
+  })
+})
+
+describe('state that must not go stale', () => {
+  test('wheel ticks while editing are dropped, not replayed when the editor closes', () => {
+    const opened = initFile(props(0))
+    const editing = syncFile({ ...opened, buffer: fromText(TEXT) }, props(20))
+    const closed = syncFile({ ...editing, buffer: undefined }, props(20))
+    expect(closed.top).toBe(1)
+  })
+
+  test('adopting props leaves a state the next draw does not move again', () => {
+    const at = (scroll: number): NavProps => ({ ...props(scroll), rows: 30 })
+    // Down and back up: the cursor line ends where only a window without the title row holds it.
+    const back = initFile(at(0), initFile(at(38), initFile(at(0))))
+    expect(syncFile(back, at(0))).toEqual(back)
+  })
+})
+
+describe('layoutTable', () => {
+  test('ragged rows and empty cells draw as a grid, every line the same width', () => {
+    const grid = layoutTable([['a', 'b', 'c'], ['1'], ['1', '', '3', 'extra']], 40)
+    const widths = new Set(grid.lines.map(line => line.length))
+    expect(widths.size).toBe(1)
+    expect(grid.lines.join('\n')).toContain('c')
+    expect(grid.lines.join('\n')).not.toContain('extra')
   })
 })

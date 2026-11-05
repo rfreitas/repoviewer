@@ -394,7 +394,7 @@ describe('tables in the pane', () => {
     const ui = await $.ui.mount(pane('terminal', 30))
     const rows = await grid(ui)
     // Top border, header, rule, row, bottom border: no wrapping into extra lines at three cells a column.
-    expect(rows.length).toBeGreaterThanOrEqual(5)
+    expect(rows).toHaveLength(5)
     expect(rows.some(l => l.includes('c13'))).toBe(true)
     await ui.unmount()
   })
@@ -403,7 +403,7 @@ describe('tables in the pane', () => {
     fixture(on, { ...FILES, 'S.md': SMALL })
     await $.command.run(run('files', 'S.md'))
     const ui = await $.ui.mount(pane('terminal', 60))
-    expect((await grid(ui)).some(l => /│ 1 +│ 2 +│/.test(l))).toBe(true)
+    expect((await grid(ui)).some(l => l.trimEnd() === '│ 1   │ 2   │')).toBe(true)
     await ui.unmount()
   })
 
@@ -542,6 +542,141 @@ describe('scrolling by rows in the pane', () => {
   })
 })
 
+describe('what the review found', () => {
+  const first = (props?: Record<string, unknown>) => String(props?.source).split('\n')[0]
+
+  test('typing resumes the place even when show_file had asked for a line', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files'))
+    await $.tool.call({ tool: 'mcp__kesav__show_file', path: 'hooks/register.tsx', line: 850 } as never)
+    const ui = await $.ui.mount(pane('terminal'))
+    await ui.key({ key: 'home', in: 'nav' })
+    const before = first(await codeIn(ui))
+    expect(before).toContain('line0 ')
+    await ui.key({ key: 's', in: 'nav' })
+    await ui.unmount()
+    const again = await $.ui.mount(pane('terminal'))
+    expect(first(await codeIn(again))).toBe(before)
+    await again.unmount()
+  })
+
+  test('a place kept for typing is not applied when the file is opened again later', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'hooks/register.tsx'))
+    const ui = await $.ui.mount(pane('terminal'))
+    await ui.key({ key: 'pagedown', in: 'nav' })
+    await ui.key({ key: 's', in: 'nav' })
+    await ui.unmount()
+    await $.command.run(run('files', 'README.md'))
+    await $.command.run(run('files', 'hooks/register.tsx'))
+    const again = await $.ui.mount(pane('terminal'))
+    expect(first(await codeIn(again))).toContain('line0 ')
+    await again.unmount()
+  })
+
+  test('a click on the status line hits what was drawn, even when the line fills the width', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    // At 42 columns the line drawn leaves out raw: a click where it would have been must do nothing.
+    const ui = await $.ui.mount(pane('terminal', 42))
+    expect(await footer(ui)).not.toContain('raw')
+    await ui.pointer({ in: 'nav', type: 'down', x: 27, y: STATUS_ROW, button: 'left' })
+    expect(await ui.find({ in: 'nav', type: 'Markdown' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('paragraphs of wide characters are counted in cells, so they cannot outgrow the page', SLOW, async ($, on) => {
+    // 30 characters are 60 cells: two rows each in a 38 cell page, three with the blank line: nine fit, not fourteen.
+    const page = Array.from({ length: 20 }, () => 'あ'.repeat(30)).join('\n\n') + '\n'
+    fixture(on, { ...FILES, 'W.md': page })
+    await $.command.run(run('files', 'W.md'))
+    const ui = await $.ui.mount(pane('terminal', 40))
+    const text = String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
+    const paragraphs = text.split('\n').filter(l => l.length === 30).length
+    expect(paragraphs).toBeLessThanOrEqual(10)
+    expect(paragraphs).toBeGreaterThanOrEqual(8)
+    await ui.unmount()
+  })
+
+  test('a first line taller than the page is cut to it, not handed over whole', SLOW, async ($, on) => {
+    const huge = Array.from({ length: 400 }, () => 'word').join(' ')
+    fixture(on, { ...FILES, 'H.md': huge + '\n' })
+    await $.command.run(run('files', 'H.md'))
+    const ui = await $.ui.mount(pane('terminal', 40))
+    const text = String((await ui.find({ in: 'nav', type: 'Markdown' }))?.props.text)
+    // 28 rows of seven words.
+    expect(text.length).toBeLessThan(1100)
+    expect(text.length).toBeGreaterThan(600)
+    await ui.unmount()
+  })
+
+  test('the wheel scrolls the file, and passes to the engine where no Client draws the page', SLOW, async ($, on) => {
+    const fx = fixture(on)
+    await $.command.run(run('files', 'hooks/register.tsx'))
+    const wheel = { requestId: 'repoviewer', by: 30, offset: 30, bodyRows: 30, contentRows: 900, origin: { kind: 'person' } } as never
+    const ui = await $.ui.mount(pane('terminal'))
+    expect(first(await codeIn(ui))).toContain('line0 ')
+    await $.ui.scroll(wheel)
+    expect(first(await codeIn(ui))).not.toContain('line0 ')
+    expect(fx.seen.scrolls).toBe(0)
+    await ui.unmount()
+
+    const vscode = await $.ui.mount(pane('vscode'))
+    await $.ui.scroll(wheel)
+    expect(fx.seen.scrolls).toBe(1)
+    await vscode.unmount()
+  })
+
+  test('the first prompt opens the pane once, and not when it was left closed', SLOW, async ($, on) => {
+    const fx = fixture(on)
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
+    await $.prompt.submit({ text: 'hello' })
+    expect(fx.seen.open.has('repoviewer')).toBe(true)
+    fx.seen.open.clear()
+    await $.prompt.submit({ text: 'again' })
+    expect(fx.seen.open.has('repoviewer')).toBe(false)
+  })
+
+  test('a pane left closed stays closed for the first prompt', SLOW, async ($, on) => {
+    const fx = fixture(on)
+    fx.seen.stored.open = false
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
+    await $.prompt.submit({ text: 'hello' })
+    expect(fx.seen.open.has('repoviewer')).toBe(false)
+  })
+
+  test('a click in the code finds the line under the title row', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'hooks/register.tsx'))
+    const ui = await $.ui.mount(pane('terminal'))
+    // Title up: the first row of code is the region's second row.
+    await ui.pointer({ in: 'nav', type: 'down', x: 5, y: 3, button: 'left' })
+    expect(await footer(ui)).toContain('3/900')
+    await ui.unmount()
+  })
+
+  test('the status line works with the title row gone', SLOW, async ($, on) => {
+    const page = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0') + 'x'.repeat(34)).join('\n\n') + '\n'
+    fixture(on, { ...FILES, 'R.md': page })
+    await $.command.run(run('files', 'R.md'))
+    const ui = await $.ui.mount(pane('terminal', 70))
+    await ui.key({ key: 'pagedown', in: 'nav' })
+    expect(await ui.find({ in: 'nav', type: 'Text', text: /^R\.md$/ })).toBeUndefined()
+    await clickFooter(ui, 'raw')
+    expect(await codeIn(ui)).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('back in the status line leaves the file for the tree', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'SPEC.md'))
+    const ui = await $.ui.mount(pane('terminal', 70))
+    await clickFooter(ui, '← back')
+    expect(await drawn(ui)).toContain('hooks/')
+    await ui.unmount()
+  })
+})
+
 describe('typing while scrolled', () => {
   test('a letter goes to the prompt, and the pane it reopens keeps the place in the file', SLOW, async ($, on) => {
     const fx = fixture(on)
@@ -564,10 +699,13 @@ describe('typing while scrolled', () => {
 
 describe('a pane that stays hidden', () => {
   test('is reported to Claude, not claimed shown', SLOW, async ($, on) => {
-    fixture(on).seen.hidden = true
+    const fx = fixture(on)
+    fx.seen.hidden = true
     const shown = await $.tool.call({ tool: 'mcp__kesav__show_file', path: 'README.md' } as never)
     expect(String(shown.result)).toContain('hidden')
     expect(String(shown.result)).toContain('/files')
+    expect(fx.seen.toasts).toHaveLength(1)
+    expect(fx.seen.stored.open).toBe(true)
   })
 })
 
@@ -605,6 +743,14 @@ describe('editing in the pane', () => {
 })
 
 describe('surfaces without a Client', () => {
+  test('VS Code keeps the toolbar the terminal moved into its status line', SLOW, async ($, on) => {
+    fixture(on)
+    await $.command.run(run('files', 'README.md'))
+    const ui = await $.ui.mount(pane('vscode'))
+    expect(await ui.find({ type: 'Button', key: 'reveal' })).toBeDefined()
+    await ui.unmount()
+  })
+
   test('VS Code draws the button tree', SLOW, async ($, on) => {
     fixture(on)
     await $.command.run(run('files'))
