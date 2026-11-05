@@ -453,9 +453,11 @@ function markdownBlocks(f: NavFile, top: number, body: number, columns: number):
       const lead = i === idx ? tableHead(lines, i) : []
       const cells = parseTable([...lead, ...lines.slice(i, end + 1)].map(row => slice(clean(row), 2000)))
       if (cells) {
-        const table = layoutTable(cells, columns)
+        const grid = layoutTable(cells, columns)
         // A table starts only if it fits whole: else it opens the next screen. One taller than the pane still draws, cut, at the top.
-        if (rows + table.lines.length > body && (blocks.length > 0 || out.length > 0)) break
+        if (rows + grid.lines.length > body && (blocks.length > 0 || out.length > 0)) break
+        // Cut to the room left: a body taller than the pane covers the status line and makes the engine scroll the pane itself.
+        const table = { ...grid, lines: grid.lines.slice(0, Math.max(1, body - rows)) }
         flush()
         blocks.push({ table })
         rows += table.lines.length

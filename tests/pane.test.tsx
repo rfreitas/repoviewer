@@ -276,6 +276,18 @@ describe('tables in the pane', () => {
     }
   })
 
+  test('a table taller than the pane is cut to it, so it cannot cover the status line', SLOW, async ($, on) => {
+    const tall = ['| n | v |', '| - | - |', ...Array.from({ length: 80 }, (_, i) => `| r${i} | v${i} |`), ''].join('\n')
+    fixture(on, { ...FILES, 'tall.md': tall })
+    await $.command.run(run('files', 'tall.md'))
+    const ui = await $.ui.mount(pane('terminal', 60))
+    const rows = await grid(ui)
+    expect(rows.length).toBeGreaterThan(5)
+    expect(rows.length).toBeLessThan(30)
+    expect(await drawn(ui)).toContain('back')
+    await ui.unmount()
+  })
+
   test('a small table keeps its natural width', SLOW, async ($, on) => {
     fixture(on, { ...FILES, 'S.md': SMALL })
     await $.command.run(run('files', 'S.md'))
